@@ -1,0 +1,14 @@
+{
+  "name": "nbuff",
+  "authors": [
+    "Igor Khasilev"
+  ],
+  "description": "Network buffer",
+  "license": "BSL-1.0",
+  "configurations": [
+    {
+      "name": "std",
+      "targetType": "library"
+    }
+  ]
+}
