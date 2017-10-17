@@ -4,9 +4,9 @@ Basically buffer is immutable(immutable(ubyte)[])[], but it support some useful 
 
 The main goal to have Buffer is to **minimize data movement when receiving or sending data from/to network**.
 
-Buffer support (in most cases) zero-copy append, split, slice, popFront and popBack, as long as some useful range primitives - find, indexOf, etc.
+Buffer supports zero-copy (in most cases) append, split, slice, popFront and popBack, as long as some useful range primitives - find, indexOf, etc.
 
-It allow transform safely data received from network without unneccesary data copy.
+It allows safe transformation of data received from network without unneccesary data copy.
 For example you can easily split received HTTP response on `headers` Buffer and `body` Buffer, then apply any transformations oh headers and body.
 
 Here is some examples.
@@ -65,10 +65,10 @@ Let split b on '2', then we will have two buffers:
   +---+---------+                +---+---------+
   | 1 | "def"   |                | 1 | "456"   |
   +---+---------+                +---+---------+
-  | 2 | "1"     |                          ^
+  | 2 | "123"   |                          ^
   +---+---------+                          | _end_pos
-            ^
-            | _end_pos
+          ^
+          | _end_pos
 
 ```
 So we have two separate Buffers without any data copy.
