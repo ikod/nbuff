@@ -39,8 +39,8 @@ In memory this buffer looks like
 now let we append one more chunk "456" to Buffer b
 ```d
 
-        | _pos
-        v
+         | _pos
+         v
   +---+---------+
   | 0 | "abc"   |
   +---+---------+
@@ -58,8 +58,8 @@ Let split b on '2', then we will have two buffers:
 
 ```d
 
-        | _pos                            | _pos
-        v                                 v
+         | _pos                           | _pos
+         v                                v
   +---+---------+                +---+---------+
   | 0 | "abc"   |                | 0 | "123"   |
   +---+---------+                +---+---------+
@@ -77,8 +77,8 @@ popFront and popBack just move _pos and _end_pos. If any of data chunks become u
 b.popFrontN(4) will give us
 
 ```d
-        | _pos
-        v
+         | _pos
+         v
   +---+---------+             | _pos
   | 0 | "abc"   |             v
   +---+---------+     +---+---------+
