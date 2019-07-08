@@ -17,9 +17,12 @@ import std.experimental.logger;
 // network buffer
 ///
 
-static immutable Exception RangeEmpty = new Exception("try to pop from empty Buffer");
+/// Range Empty exception
+static immutable Exception RangeEmpty = new Exception("try to pop from empty Buffer"); // @suppress(dscanner.style.phobos_naming_convention) // @suppress(dscanner.style.phobos_naming_convention)
+/// Requested index is out of range
 static immutable Exception IndexOutOfRange = new Exception("Index out of range");
-static immutable Exception BufferError = new Exception("Buffer internal ctruct corrupted");
+/// Buffer internal struct problem
+static immutable Exception BufferError = new Exception("Buffer internal struct corrupted");
 
 // goals
 // 1 minomal data copy
@@ -29,7 +32,8 @@ static immutable Exception BufferError = new Exception("Buffer internal ctruct c
 public alias BufferChunk =       immutable(ubyte)[];
 public alias BufferChunksArray = immutable(BufferChunk)[];
 
-struct Buffer {
+/// Network buffer (collected from network data chunks)
+struct Buffer { // @suppress(dscanner.suspicious.incomplete_operator_overloading)
 
   package:
 //    alias Chunk = BufferChunk;
@@ -39,18 +43,20 @@ struct Buffer {
     long                _end_pos;   // offset of the _length in the last chunk
 
   public:
+    /// build from string
     this(string s) pure @safe nothrow {
         _chunks = [s.representation];
         _length = s.length;
         _end_pos = _length;
     }
 
+    /// build from chunk
     this(BufferChunk s) pure @safe nothrow {
         _chunks = [s];
         _length = s.length;
         _end_pos = _length;
     }
-
+    /// build from other buffer slice
     this(in Buffer other, size_t m, size_t n) pure @safe {
         // produce slice view m..n
         if ( n == m ) {
@@ -102,7 +108,7 @@ struct Buffer {
         _end_pos = to_copy;
         _chunks = content;
     }
-
+    /// construct from other buffer slice
     this(in Buffer other, size_t m, size_t n) pure @safe immutable {
         // produce slice view m..n
         if ( n == m ) {
@@ -146,11 +152,13 @@ struct Buffer {
         _chunks = content;
     }
 
+    /// if Buffer is empty?
     bool empty() const pure @safe @nogc nothrow {
         return _length == 0;
     }
 
     alias put = append;
+    /// append data chunk to buffer
     auto append(in string s) pure @safe nothrow {
         if (s.length == 0 ) {
             return;
@@ -164,7 +172,7 @@ struct Buffer {
         _length += chunk.length;
         _end_pos = s.length;
     }
-
+    /// append chunk
     auto append(in BufferChunk s) pure @safe nothrow {
         if (s.length == 0 ) {
             return;
@@ -178,21 +186,24 @@ struct Buffer {
         _end_pos = s.length;
     }
 
+    /// length in bytes
     @property size_t length() const pure @safe @nogc nothrow {
         return _length;
     }
 
+    /// opDollar - $
     @property auto opDollar() const pure @safe @nogc nothrow {
         return _length;
     }
 
+    /// build slice over buffer
     Buffer opSlice(size_t m, size_t n) const pure @safe {
         if ( this._length==0 || m == n ) {
             return Buffer();
         }
         return Buffer(this, m, n);
     }
-
+    /// opIndex
     @property ubyte opIndex(size_t n) const pure @safe @nogc nothrow {
         if ( n >= _length ) {
             return _chunks[$][0];
@@ -202,7 +213,7 @@ struct Buffer {
             return _chunks[0][n];
         }
         foreach(ref b; _chunks) {
-            auto l = b.length;
+            immutable l = b.length;
             if ( n < l ) {
                 return b[n];
             }
@@ -218,7 +229,8 @@ struct Buffer {
         if (other.length != _length ) {
             return false;
         }
-        size_t n, m, last_chunk = _chunks.length;
+        size_t m;
+        immutable last_chunk = _chunks.length;
         if (_chunks.length == 1) {
             // single chunk
             return _chunks[0][_pos.._end_pos] == other;
@@ -242,17 +254,20 @@ struct Buffer {
         return true;
     }
 
+    /// save (for range ops)
     @property auto save() pure @safe @nogc nothrow {
         return this;
     }
 
     alias front = frontByte;
     alias popFront = popFrontByte;
+    /// return front byte
     @property ubyte frontByte() const pure @safe @nogc nothrow {
         assert(_pos < _chunks[0].length);
         return _chunks[0][_pos];
     }
 
+    /// pop front byte
     @property void popFrontByte() pure @safe @nogc {
         assert(_pos < _chunks[0].length);
         if ( _length == 0 ) {
@@ -266,10 +281,12 @@ struct Buffer {
         }
     }
 
+    /// return front data chunk
     BufferChunk frontChunk() const pure @safe @nogc nothrow {
         return _chunks[0][_pos..$];
     }
 
+    /// pop first chunk
     void popFrontChunk() pure @nogc @safe {
         assert(_pos < _chunks[0].length);
         if ( _length == 0 ) {
@@ -281,9 +298,11 @@ struct Buffer {
     }
 
     alias back = backByte;
+    /// value of last byte
     @property ubyte backByte() const pure @nogc @safe nothrow {
         return _chunks[$-1][_end_pos - 1];
     }
+    /// pop last byte
     @property void popBack() pure @safe @nogc {
         if ( _length == 0 ) {
             throw RangeEmpty;
@@ -307,7 +326,7 @@ struct Buffer {
         if ( _length == 0 ) {
             return res;
         }
-        auto last_chunk = _chunks.length - 1;
+        immutable last_chunk = _chunks.length - 1; // @suppress(dscanner.suspicious.length_subtraction)
         foreach(i,ref c; _chunks) {
             long a,b = c.length;
             if ( i == 0 ) {
@@ -320,7 +339,7 @@ struct Buffer {
         }
         return res;
     }
-
+    /// collect data chunks in contigouos buffer
     BufferChunk data() const pure @trusted {
         if ( _length == 0 ) {
             return BufferChunk.init;
@@ -341,6 +360,7 @@ struct Buffer {
         r[d..$] = c[p.._end_pos];
         return assumeUnique(r);
     }
+    /// split buffer on single-byte separator
     Buffer[] splitOn(ubyte sep) const pure @safe {
         Buffer[] res;
         Buffer a = this;
@@ -356,7 +376,7 @@ struct Buffer {
         res ~= a;
         return res;
     }
-
+    /// index of s
     ptrdiff_t indexOf(string s) const pure @safe {
         if ( s.length == 0 || s.length > _length ) {
             return -1;
@@ -377,17 +397,68 @@ struct Buffer {
         }
         return -1;
     }
-
+    /// canFind string?
     bool canFindString(string s) const pure @safe {
         return indexOf(s) >= 0;
     }
+    /// compare chunks bytes starting from `position` with buffer b
+    private int cmp(size_t pos, const(ubyte)[] b) const @safe {
+        if ( _length < b.length ) {
+            return -1;
+        }
+        if ( pos >= _length - 1 ) {
+            throw IndexOutOfRange;
+        }
+        int i;
+        while( pos >= _chunks[i].length ) {
+            pos -= _chunks[i].length;
+            i++;
+        }
+        size_t bp;
+        while(bp < b.length) {
+            auto v = _chunks[i][pos] - b[bp];
+            if ( v != 0 ) {
+                debug (redisd) tracef("return %d", v);
+                return v;
+            }
+            bp++;
+            pos++;
+            if ( pos == _chunks[i].length ) {
+                pos = 0;
+                i++;
+            }
+        }
+        return 0;
+    }
 
+    /// starting from pos count until buffer 'b'
+    private size_t countUntil(size_t pos, const(ubyte)[] b) const @safe {
+        if (b.length == 0) {
+            throw RangeEmpty;
+        }
+        if (pos == -1) {
+            return -1;
+        }
+        if (_chunks.length == 0)
+            return -1;
+
+        immutable needleLen = b.length;
+
+        while ( pos < _length - needleLen + 1 ) {
+            if ( cmp(pos, b) == 0 ) {
+                return pos;
+            }
+            pos++;
+        }
+        return -1;
+    }
+    /// find on char using predicate
     Buffer find(alias pred="a==b")(char needle) const pure @safe {
         return find!pred(cast(ubyte)needle);
     }
-
+    /// find on ubyte using predicate
     Buffer find(alias pred="a==b")(ubyte needle) const pure @safe {
-        auto chunk_last = _chunks.length - 1;
+        immutable chunk_last = _chunks.length - 1; // @suppress(dscanner.suspicious.length_subtraction)
         long chunk_pos = 0;
         foreach (i,ref c; _chunks) {
             long a,b;
@@ -399,7 +470,7 @@ struct Buffer {
             } else {
                 b = c.length;
             }
-            auto f = c[a..b].find!pred(needle);
+            immutable f = c[a..b].find!pred(needle);
 
             if ( f.length > 0) {
                 auto p = b - f.length;
@@ -411,15 +482,29 @@ struct Buffer {
         }
         return Buffer();
     }
+    /// find and split buffer
+    Buffer[] findSplitOn(immutable(ubyte)[] b) const @safe {
+        immutable i = countUntil(0, b);
+        if ( i == -1 ) {
+            return new Buffer[](3);
+        }
+        Buffer[] f;
+        f ~= this[0..i];
+        f ~= Buffer(b);
+        f ~= this[i+b.length..this.length];
+        return f;
+    }
     // _Range range() const pure @safe @nogc nothrow {
     //     return _Range(this);
     // }
     string toString() const @safe {
         return cast(string)data();
     }
-    string opCast(string)() {
+    /// cast to string
+    string opCast(string)() const {
         return toString();
     }
+    /// print some buffer internal info
     void describe() const @safe {
         writefln("leng: %d", _length);
         writefln("_pos: %d", _pos);
@@ -457,7 +542,7 @@ unittest {
     assert(cast(string)c.data() == "abcdef123");
     // test slices
     immutable Buffer di  = b[1..5];
-    immutable Buffer dii = di[1..2];
+    //immutable Buffer dii = di[1..2];
     // +di+
     // |bc|
     // |de|
@@ -465,7 +550,7 @@ unittest {
     assert(cast(string)di.data == "bcde");
 
     b = Buffer("a\nb");
-    assert(findSplit(b, "\n")[2] == ['b']);
+    assert(b.findSplitOn("\n".representation)[2] == ['b']);
     b = Buffer("012");
     b.append("345");
     b.popFrontByte();

@@ -108,4 +108,4 @@ Buffer supports next properties
 so it can be used with a lot of range algorithms, but it supports several optimized methods like `find`,
 `indexOf`.
 
-You can find exemples in unittest section of buffer.d
+You can find examples in unittest section of buffer.d
