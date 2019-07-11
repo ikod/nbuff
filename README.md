@@ -1,102 +1,9 @@
 ## Memory buffer. ##
 
-Basically buffer is immutable(immutable(ubyte)[])[], but it support some useful Range properties.
+The main goal of this package is to **minimize data movement when receiving from network and allow standard algorithms on received data**.
 
-The main goal to have Buffer is to **minimize data movement when receiving or sending data from/to network**.
 
-Buffer supports zero-copy (in most cases) append, split, slice, popFront and popBack, as long as some useful range primitives - find, indexOf, etc.
-
-It allows safe transformation of data received from network without unneccesary data copy.
-For example you can easily split received HTTP response on `headers` Buffer and `body` Buffer, then apply any transformations oh headers and body.
-
-Here is some examples.
-
-```d
-    auto b = Buffer();
-    b.append("abc");
-    b.append("def".representation);
-    b.append("123");
-
-```
-
-In memory this buffer looks like
-```d
-
-        | _pos
-        v
-  +---+---------+
-  | 0 | "abc"   |
-  +---+---------+
-  | 1 | "def"   |
-  +---+---------+
-  | 2 | "123"   |
-  +---+---------+
-            ^
-            | _end_pos
-
-```
-
-now let we append one more chunk "456" to Buffer b
-```d
-
-         | _pos
-         v
-  +---+---------+
-  | 0 | "abc"   |
-  +---+---------+
-  | 1 | "def"   |
-  +---+---------+
-  | 2 | "123"   |
-  +---+---------+
-  | 3 | "456"   |
-  +---+---------+
-            ^
-            | _end_pos
-
-```
-Let split b on '2', then we will have two buffers:
-
-```d
-
-         | _pos                           | _pos
-         v                                v
-  +---+---------+                +---+---------+
-  | 0 | "abc"   |                | 0 | "123"   |
-  +---+---------+                +---+---------+
-  | 1 | "def"   |                | 1 | "456"   |
-  +---+---------+                +---+---------+
-  | 2 | "123"   |                          ^
-  +---+---------+                          | _end_pos
-          ^
-          | _end_pos
-
-```
-So we have two separate Buffers without any data copy.
-
-popFront and popBack just move _pos and _end_pos. If any of data chunks become unreferenced, then we just pop this chunk, so it can be garbage collected. 
-b.popFrontN(4) will give us
-
-```d
-         | _pos
-         v
-  +---+---------+             | _pos
-  | 0 | "abc"   |             v
-  +---+---------+     +---+---------+
-  | 1 | "def"   |     | 0 | "def    |
-  +---+---------+     +---+---------+
-  | 2 | "123"   |     | 1 | "123"   |
-  +---+---------+     +---+---------+
-  | 3 | "456"   |     | 2 | "456"   |
-  +---+---------+     +---+---------+
-            ^                   ^
-            | _end_pos          | _end_pos
-```
-
-Chunk "abc" become unreferenced and can be collected by GC.
-
-Similarly works popBack/popBackN.
-
-Buffer supports next properties
+Basically buffer is immutable(immutable(ubyte)[])[], but it support some useful Range properties, it
 
     isInputRange!Buffer,
     isForwardRange!Buffer,
@@ -105,7 +12,32 @@ Buffer supports next properties
     isBidirectionalRange!Buffer,
     isRandomAccessRange!Buffer
 
-so it can be used with a lot of range algorithms, but it supports several optimized methods like `find`,
-`indexOf`.
+so it can be used with many range algorithms, but it supports several optimized methods like `find`,
+`indexOf`, `splitOn`, `findSplitOn`.
 
-You can find examples in unittest section of buffer.d
+For example:
+```
+    Buffer httpMessage = Buffer();
+    httpMessage.append("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r");
+    httpMessage.append("\n");
+    httpMessage.append("Conte");
+    httpMessage.append("nt-Length: 4\r\n");
+    httpMessage.append("\r\n");
+    httpMessage.append("body");
+    writeln(httpMessage.splitOn('\n').map!"a.toString.strip");
+```
+prints:
+```
+["HTTP/1.1 200 OK", "Content-Type: text/plain", "Content-Length: 4", "", "body"]
+```
+At the same time:
+
+ * typeid(httpMessage.splitOn('\n')) - optimized, returns Buffer[]
+ * typeid(httpMessage.split('\n')) - from std.algorithms, returns Buffer[]
+ * typeid(httpMessage.splitter('\n')) - from std.algorithms, returns lazy Result
+
+will give same results.
+
+You can find examples in unittest section of buffer.d 
+Buffer supports zero-copy (in most cases) append, split, slice, popFront and popBack, as long as some useful range primitives - find, indexOf, etc.
+

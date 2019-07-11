@@ -1,6 +1,6 @@
 module nbuff.buffer;
 
-import std.string:representation;
+import std.string;
 import std.array;
 import std.algorithm;
 import std.conv;
@@ -401,34 +401,34 @@ struct Buffer { // @suppress(dscanner.suspicious.incomplete_operator_overloading
     bool canFindString(string s) const pure @safe {
         return indexOf(s) >= 0;
     }
-    /// compare chunks bytes starting from `position` with buffer b
-    private int cmp(size_t pos, const(ubyte)[] b) const @safe {
-        if ( _length < b.length ) {
-            return -1;
+    private bool cmp(size_t pos, const(ubyte)[] other) const @safe {
+        if ( pos + other.length > _length ) {
+            return false;
         }
-        if ( pos >= _length - 1 ) {
-            throw IndexOutOfRange;
+        if (_chunks.length == 1) {
+            // single chunk
+            return _chunks[0][pos .. pos + other.length] == other;
         }
         int i;
-        while( pos >= _chunks[i].length ) {
+        while (pos >= _chunks[i].length) {
             pos -= _chunks[i].length;
             i++;
         }
-        size_t bp;
-        while(bp < b.length) {
-            auto v = _chunks[i][pos] - b[bp];
-            if ( v != 0 ) {
-                debug (redisd) tracef("return %d", v);
-                return v;
+        size_t compare_pos, compare_len = other.length;
+        size_t a = pos;
+        foreach (ref c; _chunks[i..$]) {
+            size_t to_compare = min(compare_len, c.length - a);
+            if (c[a..a+to_compare] != other[compare_pos .. compare_pos+to_compare]) {
+                return false;
             }
-            bp++;
-            pos++;
-            if ( pos == _chunks[i].length ) {
-                pos = 0;
-                i++;
+            a = 0;
+            compare_len -= to_compare;
+            compare_pos += to_compare;
+            if ( compare_len == 0 ) {
+                return true;
             }
         }
-        return 0;
+        return true;
     }
 
     /// starting from pos count until buffer 'b'
@@ -445,7 +445,7 @@ struct Buffer { // @suppress(dscanner.suspicious.incomplete_operator_overloading
         immutable needleLen = b.length;
 
         while ( pos < _length - needleLen + 1 ) {
-            if ( cmp(pos, b) == 0 ) {
+            if ( cmp(pos, b) ) {
                 return pos;
             }
             pos++;
@@ -550,7 +550,17 @@ unittest {
     assert(cast(string)di.data == "bcde");
 
     b = Buffer("a\nb");
-    assert(b.findSplitOn("\n".representation)[2] == ['b']);
+    assert(b.findSplitOn("\n".representation) == ["a", "\n", "b"]);
+    b = Buffer();
+    b.append("a");
+    b.append("\n");
+    b.append("b");
+    assert(b.findSplitOn("\n".representation) == ["a", "\n", "b"]);
+    b = Buffer();
+    b.append("abc");
+    b.append("def");
+    b.append("ghi");
+    assert(b.findSplitOn("cdefg".representation) == ["ab","cdefg", "hi"]);
     b = Buffer("012");
     b.append("345");
     b.popFrontByte();
@@ -734,4 +744,16 @@ unittest {
     assert(bb.indexOf("\r\n\r\n") == 8);
     assert(!bb.canFindString("\na\n"));
 
+}
+
+@safe unittest {
+    Buffer httpMessage = Buffer();
+    httpMessage.append("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r");
+    httpMessage.append("\n");
+    httpMessage.append("Conte");
+    httpMessage.append("nt-Length: 4\r\n");
+    httpMessage.append("\r\n");
+    httpMessage.append("body");
+
+    writeln(httpMessage.splitOn('\n').map!"a.toString.strip");
 }
