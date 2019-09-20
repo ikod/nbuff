@@ -432,7 +432,7 @@ struct Buffer { // @suppress(dscanner.suspicious.incomplete_operator_overloading
     }
 
     /// starting from pos count until buffer 'b'
-    private size_t countUntil(size_t pos, const(ubyte)[] b) const @safe {
+    long countUntil(size_t pos, const(ubyte)[] b) const @safe {
         if (b.length == 0) {
             throw RangeEmpty;
         }
