@@ -13,6 +13,12 @@ import std.exception;
 import std.range.primitives;
 import std.experimental.logger;
 
+private import std.experimental.allocator;
+private import std.experimental.allocator.mallocator : Mallocator;
+
+static import automem;
+static import ikod.containers;
+
 ///
 // network buffer
 ///
@@ -28,6 +34,7 @@ static immutable Exception BufferError = new Exception("Buffer internal struct c
 // 1 minomal data copy
 // 2 Range interface
 // 3 minimal footprint
+
 
 public alias BufferChunk =       immutable(ubyte)[];
 public alias BufferChunksArray = immutable(BufferChunk)[];
@@ -756,4 +763,570 @@ unittest {
     httpMessage.append("body");
 
     writeln(httpMessage.splitOn('\n').map!"a.toString.strip");
+}
+
+
+debug(nbuff) @safe @nogc nothrow
+{
+    import std.experimental.logger;
+    package void safe_tracef(A...)(string f, scope A args, string file = __FILE__, int line = __LINE__) @safe @nogc nothrow
+    {
+        bool osx,ldc;
+        version(OSX)
+        {
+            osx = true;
+        }
+        version(LDC)
+        {
+            ldc = true;
+        }
+        if (!osx || !ldc)
+        {
+            // this can fail on pair ldc2/osx, see https://github.com/ldc-developers/ldc/issues/3240
+            import core.thread;
+            debug try
+            {
+                () @trusted @nogc {tracef("[%x] %s:%d " ~ f, Thread.getThis().id(), file, line, args);}();
+            }
+            catch(Exception e)
+            {
+                () @trusted @nogc nothrow {try{errorf("[%x] %s:%d Exception: %s", Thread.getThis().id(), file, line, e);}catch{}}();
+            }
+        }
+    }    
+}
+
+
+struct MemPool
+{
+    class MemPoolException: Exception
+    {
+        this(string msg) @nogc @safe
+        {
+            super(msg);
+        }
+    }
+
+    import core.bitop;
+    private
+    {
+        enum MinSize = 64;
+        enum MaxSize = 64*1024;
+        enum IndexLimit = bsr(MaxSize);
+        enum PoolWidth = 1024;
+        alias ChunkInPool = ubyte[];
+        //alias Pool        = ikod.containers.CompressedList!(ChunkInPool, Mallocator, false);
+        alias Pool = ChunkInPool[PoolWidth];
+        Pool[IndexLimit]    _pools;
+        size_t[IndexLimit]  _mark;
+    }
+
+    ChunkInPool alloc(size_t size) @nogc @safe
+    {
+        if ( size < MinSize )
+        {
+            size = MinSize;
+        }
+        if (size>MaxSize)
+        {
+            throw new MemPoolException("requested size too large");
+        }
+        immutable i = bsr(size);
+        immutable index = _mark[i];
+        if (index == 0)
+        {
+            auto b = allocator.makeArray!(ubyte)(size);
+            debug(nbuff) safe_tracef("allocated %d new bytes(because %d spool empty) at %x", size, i, &b[0]);
+            return b;
+        }
+        auto b = _pools[i][index-1];
+        _mark[i]--;
+        assert(_mark[i]>=0);
+        debug(nbuff) safe_tracef("allocated chunk from pool %d size %d", i, size);
+        return b;
+    }
+    void free(ChunkInPool c, size_t size) @nogc @trusted
+    {
+        if ( size < MinSize )
+        {
+            size = MinSize;
+        }
+        if (size>MaxSize)
+        {
+            throw new MemPoolException("requested size too large");
+        }
+        immutable i = bsr(size);
+        immutable index = _mark[i];
+        if (index<PoolWidth)
+        {
+            _pools[i][index] = c;
+            _mark[i]++;
+        }
+        else
+        {
+            allocator.dispose(c);
+        }
+    }
+}
+
+package static MemPool _mempool;
+
+@("MemPool")
+@nogc @safe unittest
+{
+    for(size_t size=128;size<=64*1024; size = size + size/2)
+    {
+        auto m = _mempool.alloc(size);
+        _mempool.free(m, size);
+    }
+
+    for(size_t size=128;size<=64*1024; size = size + size/2)
+    {
+        auto m = _mempool.alloc(size);
+        _mempool.free(m, size);
+    }
+    auto m = _mempool.alloc(128);
+    copy("abcd".representation, m);
+    ubyte[][64*1024] cip;
+    for(int i=0;i<64*1024;i++)
+    {
+        cip[i] = _mempool.alloc(i);
+    }
+    for(int i=0;i<64*1024;i++)
+    {
+        _mempool.free(cip[i],i);
+    }
+}
+
+alias allocator = Mallocator.instance;
+
+struct SmartPtr(T)
+{
+    private struct Impl
+    {
+        T       _object;
+        size_t  _count;
+        alias _object this;
+    }
+    private
+    {
+        Impl*   _impl;
+    }
+    this(Args...)(auto ref Args args) @trusted
+    {
+        import std.functional: forward;
+        //_impl = allocator.make!(Impl)(T(args),1);
+        _impl = cast(typeof(_impl)) allocator.allocate(Impl.sizeof);
+        _impl._count = 1;
+        emplace(&_impl._object, forward!args);
+    }
+    this(this)
+    {
+        if (_impl) inc;
+    }
+    void construct() @trusted
+    {
+        if (_impl) rel;
+        _impl = cast(typeof(_impl)) allocator.allocate(Impl.sizeof);
+        _impl._count = 1;
+        emplace(&_impl._object);
+        // _impl = allocator.make!(Impl)(T.init,1);
+    }
+    ~this()
+    {
+        if (_impl is null)
+        {
+            return;
+        }
+        if (dec == 0)
+        {
+            () @trusted {dispose(allocator, _impl);}();
+        }
+    }
+    void opAssign(ref typeof(this) other)
+    {
+        if (_impl == other._impl)
+        {
+            return;
+        }
+        if (_impl)
+        {
+            rel;
+        }
+        _impl = other._impl;
+        if (_impl)
+        {
+            inc;
+        }
+    }
+    private void inc() @safe @nogc
+    {
+        _impl._count++;
+    }
+    private auto dec() @safe @nogc
+    {
+        return --_impl._count;
+    }
+    private void rel() @trusted
+    {
+        if ( _impl is null )
+        {
+            return;
+        }
+        if (dec == 0)
+        {
+            dispose(allocator, _impl);
+        }
+    }
+    alias _impl this;
+}
+package auto smart_ptr(T, Args...)(Args args)
+{
+    return SmartPtr!(T)(args);
+}
+@("smart_ptr")
+@safe
+@nogc
+unittest
+{
+    static struct S
+    {
+        int i;
+    }
+    auto ptr0 = smart_ptr!S(1);
+    assert(ptr0._impl._count == 1);
+    assert(ptr0.i == 1);
+    SmartPtr!S ptr1;
+    ptr1.construct();
+    assert(ptr1._impl._count == 1);
+    SmartPtr!S ptr2 = ptr0;
+    assert(ptr0._impl._count == 2);
+    ptr2 = ptr1;
+    assert(ptr2._impl._count == 2);
+    ikod.containers.CompressedList!(SmartPtr!S) l;
+    l.insertFront(ptr0);
+}
+struct UniquePtr(T)
+{
+    private struct Impl
+    {
+        T       _object;
+        alias   _object this;
+    }
+    @disable this(this); // only move
+    private
+    {
+        Impl*   _impl;
+    }
+    this(Args...)(auto ref Args args)
+    {
+        auto v = T(args);
+        _impl = allocator.make!(Impl)();
+        swap(v, _impl._object);
+    }
+    private void rel() @trusted
+    {
+        if ( _impl is null )
+        {
+            return;
+        }
+        dispose(allocator, _impl);
+        _impl = null;
+    }
+    void release()
+    {
+        rel;
+    }
+    void borrow(ref typeof(this) other)
+    {
+        if ( _impl )
+        {
+            rel;
+        }
+        swap(_impl,other._impl);
+    }
+
+    alias _impl this;
+}
+auto unique_ptr(T, Args...)(Args args)
+{
+    return UniquePtr!(T)(args);
+}
+@("unique_ptr")
+@safe
+@nogc
+unittest
+{
+    static struct S
+    {
+        int i;
+    }
+    UniquePtr!S ptr0 = UniquePtr!S(1);
+    assert(ptr0.i == 1);
+    UniquePtr!S ptr1;
+    ptr1.borrow(ptr0);
+    assert(ptr1.i == 1);
+    auto ptr2 = unique_ptr!S(2);
+    assert(ptr2.i == 2);
+    ptr2.release();
+}
+
+
+struct MutableMemoryChunk
+{
+    private
+    {
+        ubyte[] _data;
+        size_t  _size;
+    }
+
+    @disable this(this);
+
+    this(size_t s) @safe @nogc
+    {
+        _data = _mempool.alloc(s);
+        _size = s;
+    }
+
+    ~this() @safe @nogc
+    {
+        if ( _data !is null)
+        {
+            assert(0, "You have to consume data from chunk");
+        }
+        debug(nbuff) safe_tracef("mutable buffer destroyed");
+    }
+
+    private immutable(ubyte[]) consume() @system @nogc
+    {
+        auto v = assumeUnique(_data);
+        _data = null;
+        return v;
+    }
+
+    auto size() pure inout @safe @nogc nothrow
+    {
+        return _size;
+    }
+    auto data() pure inout @safe @nogc nothrow
+    {
+        return _data;
+    }
+    alias _data this;
+}
+
+@("MutableMemoryChunk")
+unittest
+{
+    import std.stdio;
+    import std.array;
+    {
+        auto c = MutableMemoryChunk(16);
+        auto data = c.data();
+        auto size = c.size();
+        data[0] = 1;
+        data[1..5] = [2, 3, 4, 5];
+        assert(c.data[0] == 1);
+        ubyte[128] payload = 2;
+        data = data ~ payload; // you can append but this do not change anything for c
+        assert(c.data[0] == 1 && c.size() == size);
+        //copy(payload.array, c.data); XXX check
+        assert(c.data[0] == 1 && c.size() == size);
+        auto v = c.consume();
+        assert(equal(v[0..5], [1,2,3,4,5]));
+        _mempool.free(cast(ubyte[])v, size);
+    }
+    {
+        auto c = MutableMemoryChunk(16);
+        auto data = c.data();
+        auto size = c.size();
+        data[0] = 1;
+        data[1..5] = [2, 3, 4, 5];
+        assert(c.data[0] == 1);
+        ubyte[128] payload = 2;
+        data = data ~ payload; // you can append but this do not change anything for c
+        assert(c.data[0] == 1 && c.size() == size);
+        //copy(payload.array, c.data); XXX check
+        assert(c.data[0] == 1 && c.size() == size);
+        auto v = c.consume();
+        assert(equal(v[0..5], [1,2,3,4,5]));
+    }
+    auto mutmemptr = unique_ptr!MutableMemoryChunk(16);
+    assert(mutmemptr.size==16);
+}
+
+struct ImmutableMemoryChunk
+{
+    private
+    {
+        immutable(ubyte[]) _data;
+        immutable size_t   _size;
+    }
+
+    @disable this(this);
+
+    this(ref MutableMemoryChunk c) @trusted @nogc
+    {
+        // trusted because
+        // 1. Chunk have disabled copy constructor so we have single copy of memory under chunk
+        // 2. user can't change data location
+        _data = assumeUnique(c.consume());
+        _size = c.size;
+    }
+
+    ~this() @trusted @nogc
+    {
+        // trusted because ...see constructor
+        if (_data !is null)
+        {
+            debug(nbuff) safe_tracef("return mem to pool");
+            _mempool.free(cast(ubyte[])_data, _size);
+        }
+    }
+
+    auto size() pure inout @safe @nogc nothrow
+    {
+        return _size;
+    }
+    auto data() pure inout @safe @nogc nothrow
+    {
+        return _data;
+    }
+    alias _data this;
+}
+
+@("ImmutableMemoryChunk")
+unittest
+{
+    import std.traits;
+    MutableMemoryChunk c = MutableMemoryChunk(16);
+    c.data[0..8] = [0, 1, 2, 3, 4, 5, 6, 7];
+    ImmutableMemoryChunk ic = ImmutableMemoryChunk(c);
+    assert(equal(ic.data[0..8], [0, 1, 2, 3, 4, 5, 6, 7]));
+
+    assert(!__traits(compiles, {ic._data[0] = 2;}));
+    assert(!__traits(compiles, {ic._data ~= "123".representation;}));
+
+    auto d = ic.data;
+    assert(!__traits(compiles, {d[0] = 2;}));
+    assert(!__traits(compiles, {d ~= "123".representation;}));
+    c = MutableMemoryChunk(16);
+    auto imc = SmartPtr!ImmutableMemoryChunk(c);
+}
+
+struct NbuffChunk
+{
+
+    private
+    {
+        size_t                          _beg, _end;
+        SmartPtr!(ImmutableMemoryChunk) _memory;
+    }
+
+    invariant(
+        _memory is null ||
+        (_beg <= _end && _beg <= _memory.size && _end <=_memory.size )
+    );
+
+    this(ref UniquePtr!MutableMemoryChunk c, size_t l) @safe @nogc
+    {
+        _memory = SmartPtr!ImmutableMemoryChunk(c._object);
+        _end = l;
+        c.release;
+        debug(nbuff) safe_tracef("Created NbuffChunk: %d", _memory._impl._count);
+    }
+
+    public auto size() pure inout nothrow @safe @nogc
+    {
+        return _memory._size;
+    }
+    public auto length() pure inout nothrow @safe @nogc
+    {
+        return _end - _beg;
+    }
+}
+
+
+struct Nbuff
+{
+    private
+    {
+        //ikod.containers.CompressedList!(NbuffChunk, Mallocator, false) _chunks;
+        NbuffChunk[16] _chunks;
+        size_t         _in_index;
+    }
+
+    this(this)
+    {
+        // _compresed list make proper copy
+    }
+
+    ~this() @safe @nogc
+    {
+        // foreach(ref b; _chunks)
+        // {
+        //     debug(nbuff) safe_tracef("destroy Nbuff %s(%d)", b._memory._data[b._beg..b._end], b._memory._impl._count);
+        // }
+        //_chunks.clear;
+    }
+
+    static auto get(size_t size) @safe @nogc
+    {
+        // take memory from pool
+        return UniquePtr!(MutableMemoryChunk)(size);
+    }
+
+    void append(ref UniquePtr!(MutableMemoryChunk) c, size_t l) @nogc
+    {
+        debug(nbuff) safe_tracef("append NbuffChunk");
+        //_chunks.insertBack(NbuffChunk(c,l));
+        _chunks[_in_index++] = NbuffChunk(c,l);
+    }
+
+    void popChunk() @safe @nogc
+    {
+        //_chunks.popFront();
+    }
+}
+
+@("Nbuff")
+@safe @nogc unittest
+{
+    // auto b = Nbuff.make();
+    // auto c = b;
+    // auto chunk = Nbuff.get(10);
+    // (*chunk)[5] = 1;
+    // b.append(move(chunk), 4);
+    // chunk._data[0] = 1;
+    // b.append(chunk);
+    // b.popChunk();
+}
+
+@("Nbuff1")
+unittest
+{
+    import std.string;
+    globalLogLevel = LogLevel.trace;
+    //auto c = b;
+    {
+        Nbuff b;
+        auto chunk = Nbuff.get(11);
+        copy("Abc".representation, chunk.data);
+        b.append(chunk, 3);
+    }
+    {
+        Nbuff b;
+        auto chunk = Nbuff.get(11);
+        copy("Abc".representation, chunk.data);
+        b.append(chunk, 3);
+    }
+    Nbuff b;
+    auto d = b;
+    auto chunk = Nbuff.get(512);
+    copy("Def".representation, chunk.data);
+    b.append(chunk, 3);
+    // writeln(*chunk);
+    // auto d = move(chunk);
+    // writeln(!chunk);
+    // b.popChunk();
 }

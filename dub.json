@@ -8,7 +8,24 @@
   "configurations": [
     {
       "name": "std",
-      "targetType": "library"
+      "targetType": "library",
+			"dflags": ["-dip1008"]
+    },
+    {
+      "name": "unittest",
+      "targetType": "executable",
+			"preBuildCommands": ["$DUB run --compiler=$$DC unit-threaded -c gen_ut_main -- -f bin/ut.d"],
+			"mainSourceFile": "bin/ut.d",
+			"excludedSourceFiles": ["source/app.d"],
+      "dflags": ["-dip1008"],
+      "debugVersions": ["nbuff", "cachetools"],
+			"dependencies": {
+				"unit-threaded": "*"
+			}
     }
-  ]
+  ],
+  "dependencies": {
+    "automem": "*",
+    "ikod-containers": "*"
+  }
 }
