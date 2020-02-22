@@ -16,9 +16,6 @@ import std.experimental.logger;
 private import std.experimental.allocator;
 private import std.experimental.allocator.mallocator : Mallocator;
 
-static import automem;
-static import ikod.containers;
-
 ///
 // network buffer
 ///
@@ -522,7 +519,6 @@ struct Buffer { // @suppress(dscanner.suspicious.incomplete_operator_overloading
         }
     }
 }
-
 unittest {
     info("Test buffer");
     static assert(isInputRange!Buffer);
@@ -762,9 +758,14 @@ unittest {
     httpMessage.append("\r\n");
     httpMessage.append("body");
 
-    writeln(httpMessage.splitOn('\n').map!"a.toString.strip");
+    assert(equal(httpMessage.splitOn('\n').map!"a.toString.strip",
+        ["HTTP/1.1 200 OK",
+        "Content-Type: text/plain",
+        "Content-Length: 4",
+        "",
+        "body"])
+    );
 }
-
 
 debug(nbuff) @safe @nogc nothrow
 {
@@ -784,28 +785,59 @@ debug(nbuff) @safe @nogc nothrow
         {
             // this can fail on pair ldc2/osx, see https://github.com/ldc-developers/ldc/issues/3240
             import core.thread;
-            debug try
+            () @trusted @nogc nothrow
             {
-                () @trusted @nogc {tracef("[%x] %s:%d " ~ f, Thread.getThis().id(), file, line, args);}();
-            }
-            catch(Exception e)
-            {
-                () @trusted @nogc nothrow {try{errorf("[%x] %s:%d Exception: %s", Thread.getThis().id(), file, line, e);}catch{}}();
-            }
+                try
+                {
+                    //debug(nbuff)tracef("[%x] %s:%d " ~ f, Thread.getThis().id(), file, line, args);
+                }
+                catch(Exception e)
+                {
+                    () @trusted @nogc nothrow
+                    {
+                        try
+                        {
+                            debug(nbuff)errorf("[%x] %s:%d Exception: %s", Thread.getThis().id(), file, line, e);
+                        }
+                        catch
+                        {
+                        }
+                    }();
+                }
+            }();
         }
     }    
 }
 
+package static MemPool _mempool;
+static this()
+{
+    for(int i=0;i<MemPool.IndexLimit;i++)
+    {
+        _mempool._poolSize[i] = 1024;
+        _mempool._pools[i] = Mallocator.instance.makeArray!(ubyte[])(1024);
+    }
+}
+static ~this()
+{
+    for(int i=0;i<MemPool.IndexLimit;i++)
+    {
+        Mallocator.instance.dispose(_mempool._pools[i]);
+    }
+}
 
+alias allocator = Mallocator.instance;
+static immutable Exception MemPoolException = new Exception("MemPoolException");
+static immutable Exception NbuffError = new Exception("NbuffError");
 struct MemPool
 {
-    class MemPoolException: Exception
-    {
-        this(string msg) @nogc @safe
-        {
-            super(msg);
-        }
-    }
+    // class MemPoolException: Exception
+    // {
+    //     this(string msg) @nogc @safe
+    //     {
+    //         super(msg);
+    //     }
+    // }
 
     import core.bitop;
     private
@@ -813,11 +845,11 @@ struct MemPool
         enum MinSize = 64;
         enum MaxSize = 64*1024;
         enum IndexLimit = bsr(MaxSize);
-        enum PoolWidth = 1024;
+        enum MaxPoolWidth = 64*1024;
         alias ChunkInPool = ubyte[];
-        //alias Pool        = ikod.containers.CompressedList!(ChunkInPool, Mallocator, false);
-        alias Pool = ChunkInPool[PoolWidth];
+        alias Pool = ChunkInPool[];
         Pool[IndexLimit]    _pools;
+        size_t[IndexLimit]  _poolSize;
         size_t[IndexLimit]  _mark;
     }
 
@@ -829,14 +861,14 @@ struct MemPool
         }
         if (size>MaxSize)
         {
-            throw new MemPoolException("requested size too large");
+            throw MemPoolException;
         }
         immutable i = bsr(size);
         immutable index = _mark[i];
         if (index == 0)
         {
-            auto b = allocator.makeArray!(ubyte)(size);
-            debug(nbuff) safe_tracef("allocated %d new bytes(because %d spool empty) at %x", size, i, &b[0]);
+            auto b = allocator.makeArray!(ubyte)(2<<i);
+            debug(nbuff) safe_tracef("allocated %d new bytes(because pool[%d] empty) at %x", size, i, &b[0]);
             return b;
         }
         auto b = _pools[i][index-1];
@@ -853,52 +885,83 @@ struct MemPool
         }
         if (size>MaxSize)
         {
-            throw new MemPoolException("requested size too large");
+            throw MemPoolException;
         }
-        immutable i = bsr(size);
-        immutable index = _mark[i];
-        if (index<PoolWidth)
+        immutable pool_index = bsr(size);
+        immutable index = _mark[pool_index];
+        if (index<_poolSize[pool_index])
         {
-            _pools[i][index] = c;
-            _mark[i]++;
+            _pools[pool_index][index] = c;
+            _mark[pool_index]++;
+            debug(nbuff) safe_tracef("freed to pool[%d], next position %d, size(%d)", pool_index, _mark[pool_index], c.length);
+        }
+        else if (_poolSize[pool_index] < MaxPoolWidth)
+        {
+            // double size
+            debug(nbuff) safe_tracef("double pool %d from %d (requested index=%d)", pool_index, _poolSize[pool_index], index);
+            auto ok = allocator.expandArray!(ubyte[])(_pools[pool_index], _poolSize[pool_index]);
+            if ( !ok )
+            {
+                throw MemPoolException;
+            }
+            _poolSize[pool_index] *= 2;
+            _pools[pool_index][index] = c;
+            _mark[pool_index]++;
+            debug(nbuff) safe_tracef("pool %d doubled to %d", pool_index, _poolSize[pool_index]);
         }
         else
         {
-            allocator.dispose(c);
+            allocator.deallocate(c);
         }
     }
 }
 
-package static MemPool _mempool;
 
 @("MemPool")
-@nogc @safe unittest
+@safe @nogc unittest
 {
-    for(size_t size=128;size<=64*1024; size = size + size/2)
+    MemPool __mempool;
+    //globalLogLevel = LogLevel.info;
+    for(int i=0;i<MemPool.IndexLimit;i++)
     {
-        auto m = _mempool.alloc(size);
-        _mempool.free(m, size);
+        __mempool._poolSize[i] = 1024;
+        __mempool._pools[i] = Mallocator.instance.makeArray!(ubyte[])(1024);
     }
 
     for(size_t size=128;size<=64*1024; size = size + size/2)
     {
-        auto m = _mempool.alloc(size);
-        _mempool.free(m, size);
+        auto m = __mempool.alloc(size);
+        __mempool.free(m, size);
     }
-    auto m = _mempool.alloc(128);
+
+    for(size_t size=128;size<=64*1024; size = size + size/2)
+    {
+        auto m = __mempool.alloc(size);
+        __mempool.free(m, size);
+    }
+    auto m = __mempool.alloc(128);
     copy("abcd".representation, m);
     ubyte[][64*1024] cip;
-    for(int i=0;i<64*1024;i++)
+    for(int c=0;c<128;c++)
     {
-        cip[i] = _mempool.alloc(i);
-    }
-    for(int i=0;i<64*1024;i++)
-    {
-        _mempool.free(cip[i],i);
+        for(int i=0;i<64*1024;i++)
+        {
+            cip[i] = __mempool.alloc(i);
+        }
+        for(int i=0;i<64*1024;i++)
+        {
+            __mempool.free(cip[i],i);
+        }
+        for(int i=0;i<64*1024;i++)
+        {
+            cip[i] = __mempool.alloc(i);
+        }
+        for(int i=0;i<64*1024;i++)
+        {
+            __mempool.free(cip[i],i);
+        }
     }
 }
-
-alias allocator = Mallocator.instance;
 
 struct SmartPtr(T)
 {
@@ -923,6 +986,10 @@ struct SmartPtr(T)
     this(this)
     {
         if (_impl) inc;
+    }
+    string toString()
+    {
+        return "(rc: %d, object: %s)".format(_impl?_impl._count:0, _impl?_impl._object.to!string():"none");
     }
     void construct() @trusted
     {
@@ -980,10 +1047,12 @@ struct SmartPtr(T)
     }
     alias _impl this;
 }
+
 package auto smart_ptr(T, Args...)(Args args)
 {
     return SmartPtr!(T)(args);
 }
+
 @("smart_ptr")
 @safe
 @nogc
@@ -1003,9 +1072,8 @@ unittest
     assert(ptr0._impl._count == 2);
     ptr2 = ptr1;
     assert(ptr2._impl._count == 2);
-    ikod.containers.CompressedList!(SmartPtr!S) l;
-    l.insertFront(ptr0);
 }
+
 struct UniquePtr(T)
 {
     private struct Impl
@@ -1045,13 +1113,18 @@ struct UniquePtr(T)
         }
         swap(_impl,other._impl);
     }
-
+    auto opDispatch(string op, Args...)(Args args)
+    {
+        mixin("return _impl._object.%s;".format(op));
+    }
     alias _impl this;
 }
+
 auto unique_ptr(T, Args...)(Args args)
 {
     return UniquePtr!(T)(args);
 }
+
 @("unique_ptr")
 @safe
 @nogc
@@ -1094,7 +1167,6 @@ struct MutableMemoryChunk
         {
             assert(0, "You have to consume data from chunk");
         }
-        debug(nbuff) safe_tracef("mutable buffer destroyed");
     }
 
     private immutable(ubyte[]) consume() @system @nogc
@@ -1173,17 +1245,24 @@ struct ImmutableMemoryChunk
         _data = assumeUnique(c.consume());
         _size = c.size;
     }
-
+    this(string s) @safe @nogc
+    {
+        _data = s.representation();
+        _size = 0;
+    }
     ~this() @trusted @nogc
     {
         // trusted because ...see constructor
-        if (_data !is null)
+        if (_data !is null && _size > 0)
         {
             debug(nbuff) safe_tracef("return mem to pool");
             _mempool.free(cast(ubyte[])_data, _size);
         }
     }
-
+    string toString()
+    {
+        return "[%(%0.2x,%)]".format(_data);
+    }
     auto size() pure inout @safe @nogc nothrow
     {
         return _size;
@@ -1223,19 +1302,41 @@ struct NbuffChunk
         SmartPtr!(ImmutableMemoryChunk) _memory;
     }
 
-    invariant(
-        _memory is null ||
-        (_beg <= _end && _beg <= _memory.size && _end <=_memory.size )
-    );
-
+    invariant {
+        // assert(
+        //     _memory is null ||
+        //     (_beg <= _end && _beg <= _memory.size && _end <=_memory.size ),
+        //     "%s:%s(%d) - %s".format(_beg, _end, _memory._impl._object._size, _memory._impl._object._data)
+        // );
+        // if ( !(_memory is null || (_beg <= _end && _beg <= _memory.size && _end <=_memory.size )))
+        //     {
+        //         throw new Exception("exc");
+        //     }
+    }
+    ~this() @nogc @safe
+    {
+        // _beg = _end = 0;
+        // debug(nbuff) writefln("~NbuffChunk %s", _memory);
+    }
     this(ref UniquePtr!MutableMemoryChunk c, size_t l) @safe @nogc
     {
-        _memory = SmartPtr!ImmutableMemoryChunk(c._object);
+        _memory = SmartPtr!ImmutableMemoryChunk(c._impl._object);
         _end = l;
         c.release;
-        debug(nbuff) safe_tracef("Created NbuffChunk: %d", _memory._impl._count);
     }
-
+    this(string s) @safe @nogc
+    {
+        _memory = SmartPtr!ImmutableMemoryChunk(s);
+        _end = s.length;
+    }
+    string toString()
+    {
+        if ( _memory._impl is null)
+        {
+            return "None";
+        }
+        return "[%(%02x,%)][%d..%d]".format(_memory._impl._object[_beg.._end], _beg, _end);
+    }
     public auto size() pure inout nothrow @safe @nogc
     {
         return _memory._size;
@@ -1244,49 +1345,691 @@ struct NbuffChunk
     {
         return _end - _beg;
     }
+    void opAssign(T)(auto ref T other) @safe @nogc
+    {
+        _memory = other._memory;
+        _beg = other._beg;
+        _end = other._end;
+    }
 }
 
+// class NbuffError: Exception
+// {
+//     this(string msg, string file = __FILE__, size_t line = __LINE__) @nogc @safe
+//     {
+//         super(msg, file, line);
+//     }
+// }
 
 struct Nbuff
 {
     private
     {
-        //ikod.containers.CompressedList!(NbuffChunk, Mallocator, false) _chunks;
-        NbuffChunk[16] _chunks;
-        size_t         _in_index;
+        enum ChunksPerPage = 16;
+        struct Page
+        {
+            NbuffChunk[ChunksPerPage]   _chunks;
+            Page*                       _next;
+        }
+        size_t  _length;
+        size_t  _endChunkIndex;
+        size_t  _begChunkIndex;
+        Page    _pages;
     }
 
-    this(this)
+    invariant
     {
-        // _compresed list make proper copy
+        assert(_endChunkIndex == _begChunkIndex || _length > 0, "%d, %d, length = %s".format(_begChunkIndex, _endChunkIndex, _length));
+    }
+
+    this(this) @nogc @safe
+    {
+        if (  empty || ( _begChunkIndex < ChunksPerPage && _endChunkIndex < ChunksPerPage))
+        {
+            _pages._next = null;
+            return;
+        }
+        // copy only allocated pages
+        Page* new_pages, last_new_page;
+        auto p = _pages._next;
+        while(p)
+        {
+            auto new_page = () @trusted {return allocator.make!Page();}();
+            new_page._chunks = p._chunks;
+            if ( new_pages is null)
+            {
+                new_pages = new_page;
+                last_new_page = new_pages;
+            }
+            else
+            {
+                last_new_page._next = new_page;
+                last_new_page = new_page;
+            }
+            p = p._next;
+        }
+        _pages._next = new_pages;
+    }
+
+    void opAssign(T)(auto ref T other) @safe @nogc
+    {
+        if ( other is this )
+        {
+            return;
+        }
+        auto p = _pages._next;
+        while(p)
+        {
+            auto next = p._next;
+            () @trusted {dispose(allocator, p);}();
+            p = next;
+        }
+        _length = other._length;
+        _begChunkIndex = other._begChunkIndex;
+        _endChunkIndex = other._endChunkIndex;
+        _pages._chunks = other._pages._chunks;
+        if (  empty || ( _begChunkIndex < ChunksPerPage && _endChunkIndex < ChunksPerPage))
+        {
+            return;
+        }
+        // copy only allocated pages
+        Page* new_pages, last_new_page;
+        p = other._pages._next;
+        while(p)
+        {
+            auto new_page = () @trusted {return allocator.make!Page();}();
+            new_page._chunks = p._chunks;
+            if ( new_pages is null)
+            {
+                new_pages = new_page;
+                last_new_page = new_pages;
+            }
+            else
+            {
+                last_new_page._next = new_page;
+                last_new_page = new_page;
+            }
+            p = p._next;
+        }
+        _pages._next = new_pages;
     }
 
     ~this() @safe @nogc
     {
-        // foreach(ref b; _chunks)
-        // {
-        //     debug(nbuff) safe_tracef("destroy Nbuff %s(%d)", b._memory._data[b._beg..b._end], b._memory._impl._count);
-        // }
-        //_chunks.clear;
+        auto p = _pages._next;
+        while(p)
+        {
+            auto next = p._next;
+            () @trusted {dispose(allocator, p);}();
+            p = next;
+        }
     }
-
+    void clear() @nogc @safe
+    {
+        _length = 0;
+        _begChunkIndex = _endChunkIndex = 0;
+    }
+    string toString() inout
+    {
+        string[] res;
+        int i = 0;
+        res ~= "pop_index = %d\npush_index = %d".format(_begChunkIndex, _endChunkIndex);
+        res ~= "%2.2d %( %s\n%) -> %x".format(i, _pages._chunks, _pages._next);
+        Page* p = cast(Page*)_pages._next;
+        while(p !is null)
+        {
+            i+=ChunksPerPage;
+            res ~= "%2.2d %( %s\n%) -> %x".format(i, p._chunks, p._next);
+            p = p._next;
+        }
+        return res.join("\n");
+    }
     static auto get(size_t size) @safe @nogc
     {
         // take memory from pool
         return UniquePtr!(MutableMemoryChunk)(size);
     }
+    bool empty() pure inout nothrow @safe @nogc
+    {
+        return _endChunkIndex == _begChunkIndex;
+    }
+    auto length() pure nothrow @nogc @safe
+    {
+        return _length;
+    }
+    void append(string s) @safe @nogc
+    {
+        debug(nbuff) safe_tracef("append NbuffChunk");
+        if (s.length==0)
+        {
+            throw NbuffError;
+        }
+        _length += s.length;
+        if ( _endChunkIndex < ChunksPerPage)
+        {
+            _pages._chunks[_endChunkIndex++] = NbuffChunk(s);
+            return;
+        }
 
+        Page* last_page = &_pages;
+        auto pi = _endChunkIndex - ChunksPerPage;
+        debug(nbuff) safe_tracef("pi: %d", pi);
+        debug(nbuff) safe_tracef("last_page.next = %x", last_page._next);
+        while(pi >= ChunksPerPage)
+        {
+            last_page = last_page._next;
+            pi -= ChunksPerPage;
+        }
+        assert(0 <= pi && pi < ChunksPerPage );
+        debug(nbuff) safe_tracef("last_page.next = %x, pi=%d", last_page._next, pi);
+        if (last_page._next is null)
+        {
+            // have to create new page
+            debug(nbuff) safe_tracef("create new page");
+            last_page._next = allocator.make!Page();
+        }
+        last_page._next._chunks[pi] = NbuffChunk(s);
+        _endChunkIndex++;
+    }
     void append(ref UniquePtr!(MutableMemoryChunk) c, size_t l) @nogc
     {
         debug(nbuff) safe_tracef("append NbuffChunk");
-        //_chunks.insertBack(NbuffChunk(c,l));
-        _chunks[_in_index++] = NbuffChunk(c,l);
-    }
+        if (l==0)
+        {
+//            throw new NbuffError("You can't attach zero length chunk");
+        }
+        _length += l;
+        if ( _endChunkIndex < ChunksPerPage)
+        {
+            _pages._chunks[_endChunkIndex++] = NbuffChunk(c,l);
+            return;
+        }
 
+        Page* last_page = &_pages;
+        auto pi = _endChunkIndex - ChunksPerPage;
+        debug(nbuff) safe_tracef("pi: %d", pi);
+        debug(nbuff) safe_tracef("last_page.next = %x", last_page._next);
+        while(pi >= ChunksPerPage)
+        {
+            last_page = last_page._next;
+            pi -= ChunksPerPage;
+        }
+        assert(0 <= pi && pi < ChunksPerPage );
+        debug(nbuff) safe_tracef("last_page.next = %x, pi=%d", last_page._next, pi);
+        if (last_page._next is null)
+        {
+            // have to create new page
+            debug(nbuff) safe_tracef("create new page");
+            last_page._next = allocator.make!Page();
+        }
+        last_page._next._chunks[pi] = NbuffChunk(c,l);
+        _endChunkIndex++;
+    }
+    private void append(ref NbuffChunk source, size_t pos, size_t len) @safe @nogc
+    {
+        if (len==0)
+        {
+            throw NbuffError;
+        }
+        _length += len;
+        if ( _endChunkIndex < ChunksPerPage)
+        {
+            _pages._chunks[_endChunkIndex] = source;
+            _pages._chunks[_endChunkIndex]._beg += pos;
+            _pages._chunks[_endChunkIndex]._end = _pages._chunks[_endChunkIndex]._beg+len;
+            _endChunkIndex++;
+            return;
+        }
+        Page* last_page = &_pages;
+        auto pi = _endChunkIndex - ChunksPerPage;
+        debug(nbuff) safe_tracef("pi: %d", pi);
+        debug(nbuff) safe_tracef("last_page.next = %x", last_page._next);
+        while(pi >= ChunksPerPage)
+        {
+            last_page = last_page._next;
+            pi -= ChunksPerPage;
+        }
+        assert(0 <= pi && pi < ChunksPerPage );
+        debug(nbuff) safe_tracef("last_page.next = %x, pi=%d", last_page._next, pi);
+        if (last_page._next is null)
+        {
+            // have to create new page
+            debug(nbuff) safe_tracef("create new page");
+            last_page._next = allocator.make!Page();
+        }
+        last_page._next._chunks[pi] = source;
+        last_page._next._chunks[pi]._beg += pos;
+        last_page._next._chunks[pi]._end = last_page._next._chunks[pi]._beg+len;
+        _endChunkIndex++;
+    }
     void popChunk() @safe @nogc
     {
-        //_chunks.popFront();
+        if ( empty )
+        {
+            assert(0, "You are trying to pop chunk from empty Nbuff");
+        }
+        if ( _begChunkIndex < ChunksPerPage)
+        {
+            _length -= _pages._chunks[_begChunkIndex].length;
+            _pages._chunks[_begChunkIndex++] = NbuffChunk();
+            return;
+        }
+
+        Page* last_page = &_pages;
+        debug(nbuff) safe_tracef("popping chunk %d", _begChunkIndex);
+        auto pi = _begChunkIndex - ChunksPerPage;
+        while(pi >= ChunksPerPage)
+        {
+            last_page = last_page._next;
+            pi -= ChunksPerPage;
+        }
+        debug(nbuff) safe_tracef("popping chunk  - on page index = %d", pi);
+        assert(0 <= pi && pi < ChunksPerPage );
+        _length -= _pages._chunks[pi].length;
+        last_page._next._chunks[pi] = NbuffChunk();
+        _begChunkIndex++;
+        if (empty)
+        {
+            debug(nbuff) safe_tracef("nbuff become empty");
+            _endChunkIndex = _begChunkIndex = 0;
+            return;
+        }
+        if (pi == ChunksPerPage - 1)
+        {
+            // we popped last chunk on page - it is completely free
+            auto pageToDispose = last_page._next;
+            debug(nbuff) safe_tracef("last chunk were popped from this page and nbuff is not empty, lp: %x, ptd: %x", last_page, pageToDispose);
+            last_page._next = pageToDispose._next;
+            () @trusted {dispose(allocator, pageToDispose);}();
+            // adjust indexes
+            _begChunkIndex -= ChunksPerPage;
+            _endChunkIndex -= ChunksPerPage;
+        }
     }
+    void pop(int n=1) @safe @nogc
+    {
+        auto  toPop = n;
+        while(toPop > 0)
+        {
+            if ( empty )
+            {
+                assert(0, "You are trying to pop chunk from empty Nbuff");
+            }
+
+            auto page = chunkIndexToPage(_begChunkIndex);
+            auto index = _begChunkIndex % ChunksPerPage;
+            page._chunks[index]._beg++;
+            if (page._chunks[index]._beg == page._chunks[index]._end)
+            {
+                // empty
+                popChunk();
+            }
+            _length--;
+            toPop--;
+        }
+    }
+
+    private auto chunkIndexToPage(ulong index) pure inout @safe @nogc
+    {
+        auto skipPages = index / ChunksPerPage;
+        auto p = &_pages;
+        while(skipPages>0)
+        {
+            p = p._next;
+            skipPages--;
+        }
+        return p;
+    }
+
+    immutable(ubyte)[] data() inout pure @safe
+    {
+        ubyte[] result = new ubyte[](_length);
+        auto skipPages = _begChunkIndex / ChunksPerPage;
+        int bi = cast(int)_begChunkIndex, ei = cast(int)_endChunkIndex;
+        auto p = &_pages;
+        auto toCopyChunks = ei - bi;
+        int toCopyBytes = cast(int)_length;
+        int bytesCopied = 0;
+        debug(nbuff) safe_tracef("skip %d pages", skipPages);
+        while(skipPages>0)
+        {
+            bi -= ChunksPerPage;
+            ei -= ChunksPerPage;
+            p = p._next;
+            skipPages--;
+        }
+        assert(bi>=0 && ei>0);
+        while(toCopyChunks>0 && toCopyBytes>0)
+        {
+            auto from = p._chunks[bi]._beg;
+            auto to = p._chunks[bi]._end;
+            auto tc = to - from;
+            debug(nbuff) safe_tracef("copy chunk %s: %d bytes from total %d", p._chunks[bi]._memory._object[from..to], to-from, _length);
+            result[bytesCopied..bytesCopied+tc] = p._chunks[bi]._memory._object[from..to];
+            bytesCopied += tc;
+            bi++;
+            toCopyBytes -= tc;
+            toCopyChunks--;
+            if (bi>=ChunksPerPage)
+            {
+                bi -= ChunksPerPage;
+                ei -= ChunksPerPage;
+                p = p._next;
+            }
+        }
+        return result;
+    }
+
+    Nbuff opSlice(size_t start, size_t end) @nogc @safe
+    {
+        if (start>end)
+        {
+            throw NbuffError;
+        }
+        if (end>_length)
+        {
+            throw NbuffError;
+        }
+        if (start==end)
+        {
+            return Nbuff();
+        }
+        auto bytesToSkip = start;
+        auto bytesToCopy = end-start;
+        auto page = chunkIndexToPage(_begChunkIndex);
+        auto chunkIndex = _begChunkIndex % ChunksPerPage;
+        size_t position = 0;
+        debug(nbuff) safe_tracef("start index = %d", chunkIndex);
+        debug(nbuff) safe_tracef("bytesToSkip = %d", bytesToSkip);
+        debug(nbuff) safe_tracef("bytesToCopy = %d", bytesToCopy);
+        while(bytesToSkip>0)
+        {
+            auto chunk = &page._chunks[chunkIndex];
+            debug(nbuff) safe_tracef("check chunk: [%s..%s](%d)",
+                chunk._beg, chunk._end, chunk.length);
+
+            if (bytesToSkip>=chunk.length)
+            {
+                // just skip this chunk
+                bytesToSkip -= chunk.length;
+                chunkIndex++;
+                if (chunkIndex == ChunksPerPage)
+                {
+                    page = page._next;
+                    chunkIndex = 0;
+                    continue;
+                }
+            }
+            else
+            {
+                position = chunk._beg + bytesToSkip;
+                bytesToSkip = 0;
+                break;
+            }
+        }
+        debug(nbuff) safe_tracef("start index = %d, position = %d", chunkIndex, position);
+        assert(page !is null);
+        assert(chunkIndex < ChunksPerPage);
+        Nbuff result = Nbuff();
+        while(bytesToCopy>0)
+        {
+            auto l = min(bytesToCopy, page._chunks[chunkIndex]._end - page._chunks[chunkIndex]._beg - position);
+            debug(nbuff) safe_tracef("copy %s[%d..%d]", page._chunks[chunkIndex]._memory._data, page._chunks[chunkIndex]._beg + position, page._chunks[chunkIndex]._beg+position+l);
+            result.append(page._chunks[chunkIndex], position, l);
+            bytesToCopy -= l;
+            position = 0;
+            chunkIndex++;
+            if (chunkIndex == ChunksPerPage)
+            {
+                page = page._next;
+                chunkIndex = 0;
+            }
+        }
+        return result;
+    }
+    auto opDollar()
+    {
+        return _length;
+    }
+    bool opEquals(R)(auto ref R other) @safe @nogc
+    {
+        if (this is other)
+        {
+            return true;
+        }
+        if (_length != other._length)
+        {
+            return false;
+        }
+        // real comparison
+        bool equals = true;
+        size_t to_compare = _length;
+        Page* page_this = chunkIndexToPage(_begChunkIndex);
+        Page* page_other = other.chunkIndexToPage(other._begChunkIndex);
+        size_t chunk_index_this = _begChunkIndex;
+        size_t chunk_index_other = other._begChunkIndex;
+        size_t position_this = 0;
+        size_t position_other = 0;
+        while(equals && to_compare>0)
+        {
+            auto i_this  = chunk_index_this % ChunksPerPage;
+            auto i_other = chunk_index_other % ChunksPerPage;
+            auto chunk_t = &page_this._chunks[i_this];
+            auto chunk_o = &page_other._chunks[i_other];
+            assert(position_this < chunk_t._end);
+            assert(position_other < chunk_o._end);
+            auto l_t = chunk_t._end - chunk_t._beg - position_this;
+            auto l_o = chunk_o._end - chunk_o._beg - position_other;
+            auto l_c = min(l_t, l_o, to_compare);
+            debug(nbuff) safe_tracef("compare %s and %s",
+                chunk_t._memory._data[chunk_t._beg + position_this..chunk_t._beg + position_this+l_c],
+                chunk_o._memory._data[chunk_o._beg + position_other..chunk_o._beg + position_other+l_c]);
+            equals = equal(chunk_t._memory._data[chunk_t._beg + position_this..chunk_t._beg + position_this+l_c],
+                           chunk_o._memory._data[chunk_o._beg + position_other..chunk_o._beg + position_other+l_c]);
+            position_this += l_c;
+            position_other += l_c;
+            if (l_c == l_t)
+            {
+                position_this = 0;
+                chunk_index_this++;
+                i_this++;
+                if (i_this == ChunksPerPage)
+                {
+                    page_this = page_this._next;
+                }
+            }
+            if (l_c == l_o)
+            {
+                position_other = 0;
+                chunk_index_other++;
+                i_other++;
+                if (i_other == ChunksPerPage)
+                {
+                    page_other = page_other._next;
+                }
+            }
+            debug(nbuff) safe_tracef("compared %d bytes: %s", l_c, equals);
+            to_compare -= l_c;
+        }
+        return equals;
+    }
+
+    auto opIndex(size_t i) @safe @nogc
+    {
+        if ( i >= _length)
+        {
+            throw NbuffError;
+        }
+        auto page = chunkIndexToPage(_begChunkIndex);
+        auto chunkIndex = _begChunkIndex;
+        while(i >= 0)
+        {
+            auto ci = chunkIndex % ChunksPerPage;
+            auto chunk = &page._chunks[ci];
+            if (chunk.length > i)
+            {
+                return chunk._memory._impl._object[chunk._beg + i];
+            }
+            i -= chunk.length;
+            chunkIndex++;
+            if (ci+1 == ChunksPerPage)
+            {
+                page = page._next;
+            }
+        }
+        assert(0, "Index larger that length?");
+    }
+
+    long countUntil(immutable(ubyte)[] b, size_t start_from = 0) @safe @nogc
+    {
+        if (b.length == 0)
+        {
+            throw NbuffError;
+        }
+        if (start_from >= _length)
+        {
+            throw NbuffError;
+        }
+        if (start_from == -1 || _length == 0)
+        {
+            return -1;
+        }
+        long index = 0; // index is position at which we test pattern 
+        // skip start_from
+        auto page = chunkIndexToPage(_begChunkIndex);
+        auto chunkIndex = _begChunkIndex;
+        auto ci = 0; // ci - index of the chunk on current page
+        auto chunk = &page._chunks[ci];
+        while(start_from > 0) // skip requested number of bytes
+        {
+            if (chunk.length > start_from)
+            {
+                break;
+            }
+            index += chunk.length;
+            start_from -= chunk.length;
+            chunkIndex++;
+            ci++;
+            if (ci == ChunksPerPage)
+            {
+                page = page._next;
+                ci = 0;
+            }
+            chunk = &page._chunks[ci];
+        }
+        // start_from can be > 0 if index points inside chunk
+        index += start_from;
+        auto position_this = start_from; // position_this - offset in Nbuff chunk we looking at
+        auto position_needle = 0;        // position_needlse - offset inside pattern
+
+        debug(nbuff) safe_tracef("Start search from chunk index: %s, position: %s", chunkIndex, position_this);
+        immutable needle_length = b.length;
+        while(index + needle_length <= _length)
+        {
+            size_t to_compare = needle_length;
+            debug(nbuff) safe_tracef("test from this[%s]=%02x, compare len=%d", index, this[index], to_compare);
+            // all 'local' variables used as we might overlap chunk
+            auto local_chunkIndex = chunkIndex;
+            auto local_position_this = position_this;
+            auto local_position_needle = position_needle;
+            auto local_ci = ci;
+            auto local_chunk = chunk;
+            auto local_page = page;
+            while(to_compare>0)
+            {
+                debug(nbuff) safe_tracef("to_compare: %d, chunk.length=%d, local_position_this=%d",
+                    to_compare, local_chunk.length, local_position_this);
+                auto c_l = min(to_compare, local_chunk.length-local_position_this); // we can comapre only until the end of the chunk
+                debug(nbuff) safe_tracef("compare [%(%02x %)] and [%(%02x %)]",
+                    local_chunk._memory._data[local_chunk._beg+local_position_this..local_chunk._beg+local_position_this+c_l],
+                    b[local_position_needle..local_position_needle+c_l]
+                );
+                immutable equals = equal(
+                    local_chunk._memory._data[local_chunk._beg+local_position_this..local_chunk._beg+local_position_this+c_l],
+                    b[local_position_needle..local_position_needle+c_l]
+                );
+                if (!equals)
+                {
+                    break;
+                }
+                local_position_this += c_l;
+                local_position_needle += c_l;
+                to_compare -= c_l;
+                if ( to_compare == 0)
+                {
+                    break;
+                }
+                if (local_position_this==chunk.length)
+                {
+                    debug(nbuff) safe_tracef("continue on next chunk");
+                    local_position_this = 0;
+                    local_chunkIndex++;
+                    if (local_chunkIndex == _endChunkIndex)
+                    {
+                        break;
+                    }
+                    local_ci++;
+                    if (local_ci==ChunksPerPage)
+                    {
+                        debug(nbuff) safe_tracef("continue on next page");
+                        local_ci = 0;
+                        local_page = local_page._next;
+                    }
+                    local_chunk = &local_page._chunks[local_ci];
+                }
+                
+            }
+            if (to_compare == 0)
+            {
+                debug(nbuff) safe_tracef("return %d", index);
+                return index;
+            }
+            index++;
+            debug(nbuff) safe_tracef("start from next position %d", index);
+            position_this++;
+            position_needle = 0;
+            if ( position_this == chunk.length)
+            {
+                // switch to next chunk
+                debug(nbuff) safe_tracef("next chunk");
+                position_this = 0;
+                chunkIndex++;
+                if (chunkIndex == _endChunkIndex)
+                {
+                    return -1;
+                }
+                ci++;
+                if (ci == ChunksPerPage)
+                {
+                    debug(nbuff) safe_tracef("and next page");
+                    page = page._next;
+                    ci = 0;
+                }
+                chunk = &page._chunks[ci];
+            }
+        }
+        return -1;
+    }
+}
+
+string toString(ref Nbuff b)
+{
+    string[] res;
+    int i = 0;
+    with(b)
+    {
+        res ~= "length: %d".format(_length);
+        res ~= "beg_index = %d\nend_index = %d".format(_begChunkIndex, _endChunkIndex);
+        res ~= "%2.2d %( %s\n%) -> %x".format(i, _pages._chunks, _pages._next);
+        auto p = _pages._next;
+        while(p !is null)
+        {
+            i+=ChunksPerPage;
+            res ~= "%2.2d %( %s\n%) -> %x".format(i, p._chunks, p._next);
+            p = p._next;
+        }
+    }
+    return res.join("\n");
 }
 
 @("Nbuff")
@@ -1302,11 +2045,38 @@ struct Nbuff
     // b.popChunk();
 }
 
-@("Nbuff1")
+@("Nbuff0")
+@nogc
 unittest
 {
     import std.string;
-    globalLogLevel = LogLevel.trace;
+    import std.stdio;
+    Nbuff b;
+    auto d = b;
+    auto chunk = Nbuff.get(512);
+    copy("Abc".representation, chunk.data);
+    b.append(chunk, 3);
+    chunk = Nbuff.get(16);
+    copy("Def".representation, chunk.data);
+    b.append(chunk, 3);
+    d = b;
+    // for(int i=0; i <= 2*Nbuff.ChunksPerPage; i++)
+    // {
+    //     chunk = Nbuff.get(64);
+    //     b.append(chunk, i);
+    // }
+    // auto c = b;
+    // debug(nbuff) writefln("b: %s", b);
+    // debug(nbuff) writefln("c: %s", c);
+    // d = c;
+    // debug(nbuff) writefln("d: %s", d);
+}
+
+@("Nbuff1")
+@nogc
+unittest
+{
+    import std.string;
     //auto c = b;
     {
         Nbuff b;
@@ -1325,8 +2095,172 @@ unittest
     auto chunk = Nbuff.get(512);
     copy("Def".representation, chunk.data);
     b.append(chunk, 3);
-    // writeln(*chunk);
-    // auto d = move(chunk);
-    // writeln(!chunk);
-    // b.popChunk();
+    b.popChunk();
+}
+
+@("Nbuff2")
+unittest
+{
+    Nbuff b;
+    for(int i=1; i <= 2*Nbuff.ChunksPerPage + 1; i++)
+    {
+        auto chunk = Nbuff.get(64);
+        b.append(chunk, i);
+    }
+    for(int i=0;i<2*Nbuff.ChunksPerPage; i++)
+    {
+        b.popChunk();
+    }
+    b.popChunk();
+    Nbuff c;
+    c = b;
+}
+
+@("Nbuff3")
+unittest
+{
+    Nbuff b;
+    auto chunk = Nbuff.get(16);
+    copy("Hello".representation, chunk.data);
+    b.append(chunk, 5);
+    chunk = Nbuff.get(16);
+    copy(",".representation, chunk.data);
+    b.append(chunk, 1);
+    chunk = Nbuff.get(16);
+    copy(" world!".representation, chunk.data);
+    b.append(chunk, 7);
+    auto d = b.data();
+    assert(equal(d, "Hello, world!".representation));
+}
+
+@("Nbuff4")
+unittest
+{
+    Nbuff b;
+    for(int i=0; i<32; i++)
+    {
+        string s = "%s,".format(i);
+        auto chunk = Nbuff.get(16);
+        copy(s.representation, chunk.data);
+        b.append(chunk, s.length);
+    }
+    assert(equal(cast(string)b.data, "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,"));
+}
+
+@("Nbuff5")
+unittest
+{
+    Nbuff b;
+    for(int i=0; i<32; i++)
+    {
+        string s = "%s,".format(i);
+        auto chunk = Nbuff.get(16);
+        copy(s.representation, chunk.data);
+        b.append(chunk, s.length);
+    }
+    b.pop();
+    assert(equal(cast(string)b.data, ",1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,"));
+    b.pop();
+    assert(equal(cast(string)b.data, "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,"));
+    b.pop(2);
+    assert(equal(cast(string)b.data, "2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,"));
+    b.pop(34);
+    assert(equal(cast(string)b.data, "16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,"));
+    b.pop(48);
+    assert(b.length == 0);
+}
+
+@("Nbuff6")
+unittest
+{
+    Nbuff b;
+    for(int i=0; i<32; i++)
+    {
+        string s = "%s,".format(i);
+        auto chunk = Nbuff.get(16);
+        copy(s.representation, chunk.data);
+        b.append(chunk, s.length);
+    }
+    b.pop();
+    assert(equal(cast(string)b.data, ",1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,"));
+    auto c = b[2..8]; // ",2,3,4"
+    assert(equal(",2,3,4", cast(string)c.data));
+    b.clear();
+    for(int i=0; i<32; i++)
+    {
+        string s = "%02d,".format(i);
+        auto chunk = Nbuff.get(16);
+        copy(s.representation, chunk.data);
+        b.append(chunk, s.length);
+    }
+    c = b[45..96];
+    assert(equal(cast(string)c.data, "15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,"));
+}
+@("Nbuff7")
+unittest
+{
+    globalLogLevel = LogLevel.info;
+    Nbuff b;
+    for(int i=0; i<32; i++)
+    {
+        string s = "%s,".format(i);
+        auto chunk = Nbuff.get(16);
+        copy(s.representation, chunk.data);
+        b.append(chunk, s.length);
+    }
+    auto c = b[0..$];
+    assert(b==c);
+    auto d = b[0..10];
+    auto e = b[1..11];
+    assert(d != e);
+    Nbuff f, g;
+    f.append("abc");
+    g.append("bc");
+    assert(f[1..$] == g);
+    f.pop();
+    assert(f == g);
+    f.popChunk();
+    assert(f.length == 0);
+    // mix string and chunk appends
+    f.append("Length: ");
+    auto chunk = Nbuff.get(16);
+    copy("100\n".representation, chunk.data);
+    f.append(chunk, 4);
+    assert(cast(string)f.data == "Length: 100\n");
+    g.clear();
+    g.append("L");
+    g.append("ength: 100\n");
+    globalLogLevel = LogLevel.trace;
+    assert(f == g);
+    //
+    assert(f[0] == 'L');
+    assert(g[1] == 'e');
+    assert(g[11] == '\n');
+}
+@("Nbuff8")
+unittest
+{
+    Nbuff b;
+    b.append("012");
+    b.append("345");
+    b.append("678");
+    assert(b.countUntil("01".representation, 0)==0);
+    assert(b.countUntil("12".representation, 0)==1);
+    assert(b.countUntil("23".representation, 0)==2);
+    assert(b.countUntil("23".representation, 2)==2);
+    assert(b.countUntil("345".representation, 2)==3);
+    assert(b.countUntil("345".representation, 3)==3);
+    assert(b.countUntil("23456".representation,0) == 2);
+    b.clear();
+    for(int i=0;i<100;i++)
+    {
+        b.append("%d".format(i));
+    }
+    assert(b.countUntil("10".representation) == 10);
+    assert(b.countUntil("90919".representation) == 170);
+    assert(b.countUntil("99".representation, 170) == 188);
+    for(int skip=0; skip<=170; skip++)
+    {
+        assert(b.countUntil("90919".representation, skip) == 170);
+    }
 }

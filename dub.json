@@ -8,8 +8,7 @@
   "configurations": [
     {
       "name": "std",
-      "targetType": "library",
-			"dflags": ["-dip1008"]
+      "targetType": "library"
     },
     {
       "name": "unittest",
@@ -17,7 +16,6 @@
 			"preBuildCommands": ["$DUB run --compiler=$$DC unit-threaded -c gen_ut_main -- -f bin/ut.d"],
 			"mainSourceFile": "bin/ut.d",
 			"excludedSourceFiles": ["source/app.d"],
-      "dflags": ["-dip1008"],
       "debugVersions": ["nbuff", "cachetools"],
 			"dependencies": {
 				"unit-threaded": "*"
