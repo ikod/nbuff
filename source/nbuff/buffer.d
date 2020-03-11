@@ -820,10 +820,6 @@ static this()
 }
 static ~this()
 {
-    for(int i=0;i<MemPool.IndexLimit;i++)
-    {
-        Mallocator.instance.dispose(_mempool._pools[i]);
-    }
 }
 
 alias allocator = Mallocator.instance;
@@ -1264,8 +1260,8 @@ struct ImmutableMemoryChunk
         // trusted because
         // 1. Chunk have disabled copy constructor so we have single copy of memory under chunk
         // 2. user can't change data location
-        _data = assumeUnique(c.consume());
         _size = c.size;
+        _data = assumeUnique(c.consume());
     }
     this(string s) @safe @nogc
     {
