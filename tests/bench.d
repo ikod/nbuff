@@ -39,7 +39,7 @@ void main()
         b.append(new ubyte[](2*s));
     }
     auto r = benchmark!(f0,f1)(1000000);
-    writefln("%(%s\n%)", r);
+    writefln("append, no data copy:\n%(%s\n%)", r);
  
     auto long_string = "A".repeat().take(2*16*1024).join();
     void f2()
@@ -67,7 +67,7 @@ void main()
         }
     }
     r = benchmark!(f2, f3)(100000);
-    writefln("%(%s\n%)", r);
+    writefln("append with data copy:\n%(%s\n%)", r);
 
     void f4() @safe
     {
@@ -96,7 +96,7 @@ void main()
         }
     }
     r = benchmark!(f4, f5)(1000000);
-    writefln("append:\n%(%s\n%)", r);
+    writefln("append string:\n%(%s\n%)", r);
 
     Nbuff nbuff;
     for(int i=0;i<100;i++)
