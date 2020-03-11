@@ -789,7 +789,7 @@ debug(nbuff) @safe @nogc nothrow
             {
                 try
                 {
-                    debug(nbuff)tracef("[%x] %s:%d " ~ f, Thread.getThis().id(), file, line, args);
+                    //debug(nbuff)tracef("[%x] %s:%d " ~ f, Thread.getThis().id(), file, line, args);
                 }
                 catch(Exception e)
                 {
@@ -1109,7 +1109,7 @@ struct UniquePtr(T)
     {
         if ( _impl)
         {
-            //dispose(allocator, _impl);
+            dispose(allocator, _impl);
             _impl = null;
         }
     }
@@ -1184,6 +1184,11 @@ struct MutableMemoryChunk
     ~this() @safe @nogc
     {
         debug(nbuff) safe_tracef("destroy: %s, %s", _data, _size);
+        if ( _size > 0 )
+        {
+            _mempool.free(_data, _size);
+        }
+
     }
     private immutable(ubyte[]) consume() @system @nogc
     {
@@ -2440,4 +2445,5 @@ unittest
     auto c = UniquePtr!MutableMemoryChunk(64);
     c.data[0] = 1;
     writeln(c.data);
+    infof("-");
 }
