@@ -789,7 +789,7 @@ debug(nbuff) @safe @nogc nothrow
             {
                 try
                 {
-                    //debug(nbuff)tracef("[%x] %s:%d " ~ f, Thread.getThis().id(), file, line, args);
+                    //debug(nbuff)writefln("[%x] %s:%d " ~ f, Thread.getThis().id(), file, line, args);
                 }
                 catch(Exception e)
                 {
@@ -797,7 +797,7 @@ debug(nbuff) @safe @nogc nothrow
                     {
                         try
                         {
-                            debug(nbuff)errorf("[%x] %s:%d Exception: %s", Thread.getThis().id(), file, line, e);
+                            //debug(nbuff)errorf("[%x] %s:%d Exception: %s", Thread.getThis().id(), file, line, e);
                         }
                         catch
                         {
@@ -820,6 +820,15 @@ static this()
 }
 static ~this()
 {
+    for(int i=0;i<MemPool.IndexLimit;i++)
+    {
+        for(int j=0; j < _mempool._mark[i]; j++)
+        {
+            allocator.deallocate(_mempool._pools[i][j]);
+        }
+        _mempool._mark[i] = 0;
+        allocator.deallocate(_mempool._pools[i]);
+    }
 }
 
 alias allocator = Mallocator.instance;
@@ -950,6 +959,7 @@ struct MemPool
     }
     auto m = __mempool.alloc(128);
     copy("abcd".representation, m);
+    __mempool.free(m, 128);
     ubyte[][64*1024] cip;
     for(int c=0;c<128;c++)
     {
@@ -977,20 +987,21 @@ struct SmartPtr(T)
     private struct Impl
     {
         T       _object;
-        size_t  _count;
-        alias _object this;
+        int     _count;
+        alias   _object this;
     }
     private
     {
         Impl*   _impl;
     }
-    this(Args...)(auto ref Args args) @trusted
+    this(Args...)(auto ref Args args, string file = __FILE__, int line = __LINE__) @trusted
     {
         import std.functional: forward;
         //_impl = allocator.make!(Impl)(T(args),1);
         _impl = cast(typeof(_impl)) allocator.allocate(Impl.sizeof);
         _impl._count = 1;
         emplace(&_impl._object, forward!args);
+        debug(nbuff) safe_tracef("emplaced", _count);
     }
     this(this)
     {
@@ -1019,7 +1030,7 @@ struct SmartPtr(T)
             () @trusted {dispose(allocator, _impl);}();
         }
     }
-    void opAssign(ref typeof(this) other)
+    void opAssign(ref typeof(this) other, string file = __FILE__, int line = __LINE__)
     {
         if (_impl == other._impl)
         {
@@ -1071,6 +1082,7 @@ unittest
     {
         int i;
     }
+    safe_tracef("test");
     auto ptr0 = smart_ptr!S(1);
     assert(ptr0._impl._count == 1);
     assert(ptr0.i == 1);
@@ -1129,6 +1141,10 @@ struct UniquePtr(T)
             rel;
         }
         swap(_impl,other._impl);
+    }
+    bool isNull() @safe @nogc nothrow
+    {
+        return _impl is null;
     }
     auto opDispatch(string op, Args...)(Args args)
     {
@@ -1240,6 +1256,7 @@ unittest
         assert(c.data[0] == 1 && c.size() == size);
         auto v = c.consume();
         assert(equal(v[0..5], [1,2,3,4,5]));
+        _mempool.free(cast(ubyte[])v, size);
     }
     auto mutmemptr = unique_ptr!MutableMemoryChunk(16);
     assert(mutmemptr.size==16);
@@ -1278,7 +1295,7 @@ struct ImmutableMemoryChunk
         // trusted because ...see constructor
         if (_data !is null && _size > 0)
         {
-            debug(nbuff) safe_tracef("return mem to pool");
+            //debug(nbuff) safe_tracef("return mem to pool");
             _mempool.free(cast(ubyte[])_data, _size);
         }
     }
@@ -1319,7 +1336,7 @@ unittest
 struct NbuffChunk
 {
 
-    private
+    public
     {
         size_t                          _beg, _end;
         SmartPtr!(ImmutableMemoryChunk) _memory;
@@ -1336,11 +1353,11 @@ struct NbuffChunk
         //         throw new Exception("exc");
         //     }
     }
-    ~this() @nogc @safe
-    {
-        // _beg = _end = 0;
-        // debug(nbuff) writefln("~NbuffChunk %s", _memory);
-    }
+    // ~this() @nogc @safe nothrow
+    // {
+    //     // _beg = _end = 0;
+    //     // debug(nbuff) writefln("~NbuffChunk %s", _memory);
+    // }
     this(ref UniquePtr!MutableMemoryChunk c, size_t l) @safe @nogc
     {
         _memory = SmartPtr!ImmutableMemoryChunk(c._impl._object);
@@ -1377,7 +1394,7 @@ struct NbuffChunk
     {
         return _memory._impl._object[_beg.._end];
     }
-    void opAssign(T)(auto ref T other) @safe @nogc
+    void opAssign(T)(auto ref T other, string file = __FILE__, int line = __LINE__) @safe @nogc
     {
         _memory = other._memory;
         _beg = other._beg;
@@ -2440,6 +2457,5 @@ unittest
 {
     auto c = UniquePtr!MutableMemoryChunk(64);
     c.data[0] = 1;
-    writeln(c.data);
-    infof("-");
+    auto n = NbuffChunk("abc");
 }
