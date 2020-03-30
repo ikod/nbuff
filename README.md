@@ -1,3 +1,55 @@
+## Nbuff ##
+
+Nbuff is `nogc` buffer. Goals:
+
+* give user immutable view on bytes
+* avoid data copy
+* avoid GC-allocations
+
+Main consumer of Nbuff can be networking code. Usage scenario: user requested mutable ubyte[] from Nbuff, read data from network into this buffer, then append received data to Nbuff. Then you can find patterns in Nbuff content, apply range algorithms to it, split in on parts, as Nbuff behave as range of bytes - everything without data copy and memory allocations.
+
+All Nbuff content is refcounted, so it will be authomatically freed if not referenced.
+
+Code sample:
+
+```
+    NbuffChunk receiveData(int socket, size_t n) @safe
+    {
+        // Nbuff.get() - get unique reference for n mutable bytes
+        // You can't have multiple references to this buffer (this is unique_ptr)
+        auto buffer = Nbuff.get(n);
+
+        // now read data from socket to buffer - unsafe as you pet pointer to buffer 
+        auto rc = () @trusted {
+            return .recv(socket, cast(void*)&buffer.data[ptr], n, 0);
+        }();
+
+        if ( rc > 0 )
+        {
+            // if we received something - convert it to immutable buffer and return
+            return NbuffChunk(buffer, rc);
+        }
+        else
+        {
+            throw Exception("");
+        }
+        // if you didn't attached "buffer" to anything - it will be freed on leaving scope
+    }
+    void readReply(int socket, size_t n)
+    {
+        Nbuff b;
+        try
+        {
+            NbuffChunk r = receiveData(socket, n);
+            b.append(r);
+        }
+        catch (Exception e)
+        {
+            // done
+        }
+    }
+```
+
 ## Memory buffer. ##
 
 The main goal of this package is to **minimize data movement when receiving from network and allow standard algorithms on received data**.

@@ -1336,7 +1336,7 @@ unittest
 struct NbuffChunk
 {
 
-    public
+    private
     {
         size_t                          _beg, _end;
         SmartPtr!(ImmutableMemoryChunk) _memory;
@@ -1446,10 +1446,20 @@ struct NbuffChunk
         assert(_beg < _end);
         _beg++;
     }
+    void popFrontN(size_t n) @safe @nogc
+    {
+        assert(n < length);
+        _beg += n;
+    }
     void popBack() @safe @nogc
     {
         assert(_beg < _end);
         _end--;
+    }
+    void popBackN(size_t n) @safe @nogc
+    {
+        assert(n < length);
+        _end -= length;
     }
     NbuffChunk save() @safe @nogc
     {
@@ -1684,6 +1694,10 @@ struct Nbuff
         }
         last_page._next._chunks[pi] = NbuffChunk(c,l);
         _endChunkIndex++;
+    }
+    void append(ref NbuffChunk source) @safe @nogc
+    {
+        append(source, 0, source.length);
     }
     void append(ref NbuffChunk source, size_t pos, size_t len) @safe @nogc
     {
