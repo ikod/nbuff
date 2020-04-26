@@ -78,6 +78,15 @@ debug(nbuff) @safe @nogc nothrow
     }    
 }
 
+debug(nbuff)
+{
+    void safe_printf(A...)(A a) @trusted
+    {
+        import core.stdc.stdio: printf;
+        printf(&a[0][0], a[1..$]);
+    }
+}
+
 package static MemPool _mempool;
 static this()
 {
@@ -259,7 +268,7 @@ struct SmartPtr(T)
         int     _count;
         alias   _object this;
     }
-    private
+    public
     {
         Impl*   _impl;
     }
@@ -337,7 +346,7 @@ struct SmartPtr(T)
     alias _impl this;
 }
 
-package auto smart_ptr(T, Args...)(Args args)
+auto smart_ptr(T, Args...)(Args args)
 {
     return SmartPtr!(T)(args);
 }
@@ -347,14 +356,24 @@ package auto smart_ptr(T, Args...)(Args args)
 @nogc
 unittest
 {
-    static struct S
+    struct S
     {
         int i;
+        this(int v)
+        {
+            i = v;
+        }
+        void set(int v)
+        {
+            i = v;
+        }
     }
     safe_tracef("test");
     auto ptr0 = smart_ptr!S(1);
     assert(ptr0._impl._count == 1);
     assert(ptr0.i == 1);
+    ptr0.set(2);
+    assert(ptr0.i == 2);
     SmartPtr!S ptr1;
     ptr1.construct();
     assert(ptr1._impl._count == 1);
@@ -627,6 +646,9 @@ struct NbuffChunk
     //     // _beg = _end = 0;
     //     // debug(nbuff) writefln("~NbuffChunk %s", _memory);
     // }
+    package this(this) @safe @nogc
+    {
+    }
     this(ref UniquePtr!MutableMemoryChunk c, size_t l) @safe @nogc
     {
         _memory = SmartPtr!ImmutableMemoryChunk(c._impl._object);
@@ -643,7 +665,7 @@ struct NbuffChunk
         _memory = SmartPtr!ImmutableMemoryChunk(s);
         _end = s.length;
     }
-    string toString()
+    string toString() inout
     {
         if ( _memory._impl is null)
         {
@@ -717,7 +739,8 @@ struct NbuffChunk
     }
     void popFrontN(size_t n) @safe @nogc
     {
-        assert(n < length);
+        debug(nbuff) safe_tracef("popn %d of %d", n, length);
+        assert(n <= length);
         _beg += n;
     }
     void popBack() @safe @nogc
@@ -727,7 +750,7 @@ struct NbuffChunk
     }
     void popBackN(size_t n) @safe @nogc
     {
-        assert(n < length);
+        assert(n <= length);
         _end -= length;
     }
     NbuffChunk save() @safe @nogc
@@ -873,12 +896,20 @@ struct Nbuff
         string[] res;
         int i = 0;
         res ~= "pop_index = %d\npush_index = %d".format(_begChunkIndex, _endChunkIndex);
-        res ~= "%2.2d %( %s\n%) -> %x".format(i, _pages._chunks, _pages._next);
+        res ~= "page 0";
+        for(int j=0;j<ChunksPerPage;j++)
+        {
+            res ~= "%d %s".format(j, _pages._chunks[j].toString);
+        }
+        //res ~= "%2.2d %( %s\n%) -> %x".format(i, _pages._chunks[0..$], _pages._next);
         Page* p = cast(Page*)_pages._next;
         while(p !is null)
         {
             i+=ChunksPerPage;
-            res ~= "%2.2d %( %s\n%) -> %x".format(i, p._chunks, p._next);
+            for(int j=0;j<ChunksPerPage;j++)
+            {
+                res ~= "%d %s".format(j, p._chunks[j].toString);
+            }
             p = p._next;
         }
         return res.join("\n");
@@ -1111,11 +1142,10 @@ struct Nbuff
         // ubyte[] result = new ubyte[](_length);
         auto skipPages = _begChunkIndex / ChunksPerPage;
         int  bi = cast(int)_begChunkIndex, ei = cast(int)_endChunkIndex;
-        auto p = &_pages;
+        Page* p = &_pages;
         auto toCopyChunks = ei - bi;
         int toCopyBytes = cast(int)_length;
         int bytesCopied = 0;
-        debug(nbuff) safe_tracef("%x, skip %d pages", &this, skipPages);
         while(skipPages>0)
         {
             bi -= ChunksPerPage;
@@ -1135,7 +1165,6 @@ struct Nbuff
             auto from = p._chunks[bi]._beg;
             auto to = p._chunks[bi]._end;
             auto tc = to - from;
-            debug(nbuff) safe_tracef("copy chunk %s: %d bytes from total %d", p._chunks[bi]._memory._object[from..to], to-from, _length);
             mc._impl._object[bytesCopied..bytesCopied+tc] = p._chunks[bi]._memory._object[from..to];
             bytesCopied += tc;
             bi++;
@@ -1448,25 +1477,25 @@ struct Nbuff
     }
 }
 
-string toString(ref Nbuff b)
-{
-    string[] res;
-    int i = 0;
-    with(b)
-    {
-        res ~= "length: %d".format(_length);
-        res ~= "beg_index = %d\nend_index = %d".format(_begChunkIndex, _endChunkIndex);
-        res ~= "%2.2d %( %s\n%) -> %x".format(i, _pages._chunks, _pages._next);
-        auto p = _pages._next;
-        while(p !is null)
-        {
-            i+=ChunksPerPage;
-            res ~= "%2.2d %( %s\n%) -> %x".format(i, p._chunks, p._next);
-            p = p._next;
-        }
-    }
-    return res.join("\n");
-}
+// string toString(ref Nbuff b)
+// {
+//     string[] res;
+//     int i = 0;
+//     with(b)
+//     {
+//         res ~= "length: %d".format(_length);
+//         res ~= "beg_index = %d\nend_index = %d".format(_begChunkIndex, _endChunkIndex);
+//         res ~= "%2.2d %( %s\n%) -> %x".format(i, _pages._chunks, _pages._next);
+//         auto p = _pages._next;
+//         while(p !is null)
+//         {
+//             i+=ChunksPerPage;
+//             res ~= "%2.2d %( %s\n%) -> %x".format(i, p._chunks, p._next);
+//             p = p._next;
+//         }
+//     }
+//     return res.join("\n");
+// }
 
 @("NbuffChunk")
 @safe
@@ -1572,7 +1601,6 @@ unittest
     b.append(chunk, 7);
     auto d = b.data();
     assert(equal(d, "Hello, world!".representation));
-    writeln(d);
     assert(d[0] == 'H');
     assert(d[$-1] == '!');
 }
@@ -1742,3 +1770,4 @@ unittest
     c.data[0] = 1;
     auto n = NbuffChunk("abc");
 }
+
