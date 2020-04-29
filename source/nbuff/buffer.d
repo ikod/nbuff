@@ -792,6 +792,9 @@ struct Nbuff
         assert(_endChunkIndex == _begChunkIndex || _length > 0, "%d, %d, length = %s".format(_begChunkIndex, _endChunkIndex, _length));
     }
 
+    ///
+    /// copy references to RC-data
+    ///
     this(this) @nogc @safe
     {
         // if (  empty || ( _begChunkIndex < ChunksPerPage && _endChunkIndex < ChunksPerPage))
@@ -825,6 +828,9 @@ struct Nbuff
         _pages._next = new_pages;
     }
 
+    ///
+    /// copy references to RC-data
+    ///
     void opAssign(T)(auto ref T other) @safe @nogc
     {
         if ( other is this )
@@ -868,6 +874,9 @@ struct Nbuff
         _pages._next = new_pages;
     }
 
+    ///
+    /// dispose all allocated pages and dec refs for any data
+    ///
     ~this() @safe @nogc
     {
         auto p = _pages._next;
@@ -878,6 +887,7 @@ struct Nbuff
             p = next;
         }
     }
+
     void clear() @nogc @safe
     {
         _length = 0;
@@ -891,6 +901,7 @@ struct Nbuff
         }
         _pages = Page();
     }
+
     string toString() inout
     {
         string[] res;
@@ -914,19 +925,23 @@ struct Nbuff
         }
         return res.join("\n");
     }
+
     static auto get(size_t size) @safe @nogc
     {
         // take memory from pool
         return MutableNbuffChunk(size);
     }
+
     bool empty() pure inout nothrow @safe @nogc
     {
         return _endChunkIndex == _begChunkIndex;
     }
+
     auto length() pure nothrow @nogc @safe
     {
         return _length;
     }
+
     void append(string s) @safe @nogc
     {
         debug(nbuff) safe_tracef("append NbuffChunk");
@@ -961,12 +976,13 @@ struct Nbuff
         last_page._next._chunks[pi] = NbuffChunk(s);
         _endChunkIndex++;
     }
-    void append(ref UniquePtr!(MutableMemoryChunk) c, size_t l) @nogc
+
+    void append(ref UniquePtr!(MutableMemoryChunk) c, size_t l) @safe @nogc
     {
         debug(nbuff) safe_tracef("append NbuffChunk");
         if (l==0)
         {
-//            throw new NbuffError("You can't attach zero length chunk");
+            throw NbuffError;
         }
         _length += l;
         if ( _endChunkIndex < ChunksPerPage)
@@ -995,6 +1011,7 @@ struct Nbuff
         last_page._next._chunks[pi] = NbuffChunk(c,l);
         _endChunkIndex++;
     }
+
     void append(ref NbuffChunk source) @safe @nogc
     {
         append(source, 0, source.length);
@@ -1036,6 +1053,7 @@ struct Nbuff
         last_page._next._chunks[pi]._end = last_page._next._chunks[pi]._beg+len;
         _endChunkIndex++;
     }
+
     void popChunk() @safe @nogc
     {
         if ( empty )
@@ -1248,10 +1266,12 @@ struct Nbuff
         }
         return result;
     }
+
     auto opDollar()
     {
         return _length;
     }
+
     bool opEquals(R)(auto ref R other) @safe @nogc
     {
         if (this is other)
@@ -1474,6 +1494,51 @@ struct Nbuff
             }
         }
         return -1;
+    }
+    version(Posix)
+    {
+        import core.sys.posix.sys.uio: iovec;
+        /// build iovec
+        /// Paramenter v - ref to array of iovec structs
+        /// n - size of array (must be >0)
+        /// Return number of actually filled entries;
+        int toIoVec(iovec* v, int n) @system
+        {
+            assert(n>0);
+            if (empty)
+            {
+                return 0;
+            }
+            int vi = 0;
+            auto skipPages = _begChunkIndex / ChunksPerPage;
+            int  bi = cast(int)_begChunkIndex, ei = cast(int)_endChunkIndex;
+            Page* p = &_pages;
+            while(skipPages > 0)
+            {
+                bi -= ChunksPerPage;
+                ei -= ChunksPerPage;
+                p = p._next;
+                skipPages--;
+            }
+
+            // fill no more than n and no more than we have chunks
+            int i = bi, j = 0;
+            for(; j < n && i<ei; j++)
+            {
+                auto beg = p._chunks[i]._beg;
+                void* base = cast(void*)p._chunks[i]._memory._impl._object.ptr + beg;
+                v[j].iov_base = base;
+                v[j].iov_len  = p._chunks[i].length;
+                i++;
+                if (i == ChunksPerPage)
+                {
+                    i -= ChunksPerPage;
+                    ei -= ChunksPerPage;
+                    p = p._next;
+                }
+            }
+            return j;
+        }
     }
 }
 
@@ -1771,3 +1836,29 @@ unittest
     auto n = NbuffChunk("abc");
 }
 
+version(Posix)
+{
+    @("iovec")
+    unittest
+    {
+        import core.sys.posix.sys.uio: iovec;
+        Nbuff b;
+        iovec[64] iov64;
+        // fill nbuff
+        for(int k=0;k<32;k++)
+        {
+            b.append("%s\n".format(k));
+        }
+        // pop 15 chunks (so we will cross page boundary)
+        iota(15).each!(_ => b.popChunk());
+        auto i = b.toIoVec(&iov64[0], 64);
+        assert(i == 17);
+        for(int k=0;k<i;k++)
+        {
+            int j = k + 15;
+            assert("%s\n".format(j) == cast(string)iov64[k].iov_base[0..iov64[k].iov_len]);
+            //writef("%s:%s", j, cast(string)iov64[k].iov_base[0..iov64[k].iov_len]);
+        }
+
+    }
+}
