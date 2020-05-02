@@ -6,7 +6,7 @@
     buildRequirements "allowWarnings"
     dependency "automem" version="*"
     dependency "ikod-containers" version="0.0.5"
-    dependency "nbuff" version="0.0.6"
+    dependency "nbuff" version="0.1.1"
 +/
 
 import std.datetime.stopwatch;
@@ -31,14 +31,7 @@ void main()
         chunk = Nbuff.get(2*s);
         b.append(chunk, s);
     }
-    void f1()
-    {
-        Buffer b;
-        auto s = uniform(16, 16*1024, rnd);
-        b.append(new ubyte[](s));
-        b.append(new ubyte[](2*s));
-    }
-    auto r = benchmark!(f0,f1)(1000000);
+    auto r = benchmark!(f0)(1_000_000);
     writefln("append, no data copy:\n%(%s\n%)", r);
  
     auto long_string = "A".repeat().take(2*16*1024).join();
@@ -54,19 +47,7 @@ void main()
             b.append(chunk, s);
         }
     }
-    void f3()
-    {
-        Buffer b;
-        auto limit = uniform(8, 32, rnd);
-        for(int i=0;i<limit;i++)
-        {
-            auto s = uniform(16, 16*1024, rnd);
-            auto chunk = new ubyte[](s);
-            copy(long_string.representation[0..s], chunk);
-            b.append(cast(immutable(ubyte)[])chunk);
-        }
-    }
-    r = benchmark!(f2, f3)(100000);
+    r = benchmark!(f2)(1_000_000);
     writefln("append with data copy:\n%(%s\n%)", r);
 
     void f4() @safe
@@ -82,20 +63,7 @@ void main()
             }
         }
     }
-    void f5()
-    {
-        Buffer b;
-        auto limit = uniform(8, 64, rnd);
-        for(int i=0;i<limit;i++)
-        {
-            b.append("abcdef");
-            if ( i % 2 )
-            {
-                b.popFront();
-            }
-        }
-    }
-    r = benchmark!(f4, f5)(1000000);
+    r = benchmark!(f4)(1_000_000);
     writefln("append string:\n%(%s\n%)", r);
 
     Nbuff nbuff;
@@ -103,41 +71,24 @@ void main()
     {
         nbuff.append("%d".format(i));
     }
-    Buffer buffer;
-    for(int i=0;i<100;i++)
-    {
-        buffer.append("%d".format(i));
-    }
     void f6()
     {
         nbuff.countUntil("10".representation);
     }
-    void f7()
-    {
-        buffer.countUntil(0, "10".representation);
-    }
-    r = benchmark!(f6, f7)(1000000);
+    r = benchmark!(f6)(1_000_000);
     writefln("countUntil(short):\n%(%s\n%)", r);
 
     void f8()
     {
         nbuff.countUntil("90919".representation);
     }
-    void f9()
-    {
-        buffer.countUntil(0, "90919".representation);
-    }
-    r = benchmark!(f8, f9)(1000000);
+    r = benchmark!(f8)(1_000_000);
     writefln("countUntil(long) :\n%(%s\n%)", r);
     void f10()
     {
         nbuff.countUntil("90919".representation, 100);
     }
-    void f11()
-    {
-        buffer.countUntil(100, "90919".representation);
-    }
-    r = benchmark!(f10, f11)(1000000);
+    r = benchmark!(f10)(1_000_000);
     writefln("countUntil(long,skip) :\n%(%s\n%)", r);
 }
 

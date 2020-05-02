@@ -828,6 +828,15 @@ struct Nbuff
         _pages._next = new_pages;
     }
 
+    this(string s) @nogc @safe
+    {
+        append(s);
+    }
+    this(immutable(ubyte)[] s) @nogc @safe
+    {
+        auto c = NbuffChunk(s);
+        append(c);
+    }
     ///
     /// copy references to RC-data
     ///
@@ -1099,8 +1108,14 @@ struct Nbuff
             _endChunkIndex -= ChunksPerPage;
         }
     }
-    void pop(int n=1) @safe @nogc
+    void pop(long n=1) @safe @nogc
     {
+        assert(n <= _length);
+        if (n == _length)
+        {
+            clear();
+            return;
+        }
         auto  toPop = n;
         while(toPop > 0)
         {
@@ -1834,6 +1849,15 @@ unittest
     auto c = UniquePtr!MutableMemoryChunk(64);
     c.data[0] = 1;
     auto n = NbuffChunk("abc");
+}
+
+@("Nbuff11")
+unittest
+{
+    // init from string
+    auto b = Nbuff("abc");
+    assert(b.length == 3);
+    assert(b.data.data == NbuffChunk("abc"));
 }
 
 version(Posix)
