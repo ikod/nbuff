@@ -502,7 +502,7 @@ struct MutableMemoryChunk
     {
         return _size;
     }
-    auto data() pure inout @safe @nogc nothrow
+    auto data() pure inout @system @nogc nothrow
     {
         return _data;
     }
@@ -681,7 +681,7 @@ struct NbuffChunk
     {
         return _end - _beg;
     }
-    public auto data() @system @nogc
+    public auto data() @safe @nogc
     {
         return _memory._impl._object[_beg.._end];
     }
