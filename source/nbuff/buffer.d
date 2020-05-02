@@ -681,7 +681,7 @@ struct NbuffChunk
     {
         return _end - _beg;
     }
-    public auto data() @safe @nogc
+    public auto data() @system @nogc
     {
         return _memory._impl._object[_beg.._end];
     }
