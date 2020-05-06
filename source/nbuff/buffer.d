@@ -665,7 +665,7 @@ struct NbuffChunk
         _memory = SmartPtr!ImmutableMemoryChunk(s);
         _end = s.length;
     }
-    string toString() inout
+    string toString() inout @safe
     {
         if ( _memory._impl is null)
         {
@@ -911,26 +911,25 @@ struct Nbuff
         _pages = Page();
     }
 
-    string toString() inout
+    string toString() @safe
     {
         string[] res;
-        int i = 0;
         res ~= "pop_index = %d\npush_index = %d".format(_begChunkIndex, _endChunkIndex);
-        res ~= "page 0";
-        for(int j=0;j<ChunksPerPage;j++)
+        auto p = chunkIndexToPage(_begChunkIndex);
+        auto chunkIndex = _begChunkIndex % ChunksPerPage;
+        auto i = _begChunkIndex;
+        while(i<_endChunkIndex)
         {
-            res ~= "%d %s".format(j, _pages._chunks[j].toString);
-        }
-        //res ~= "%2.2d %( %s\n%) -> %x".format(i, _pages._chunks[0..$], _pages._next);
-        Page* p = cast(Page*)_pages._next;
-        while(p !is null)
-        {
-            i+=ChunksPerPage;
-            for(int j=0;j<ChunksPerPage;j++)
+            for(ulong j=chunkIndex;j<ChunksPerPage && i < _endChunkIndex; j++,i++)
             {
-                res ~= "%d %s".format(j, p._chunks[j].toString);
+                if (p._chunks[j].length>0)
+                {
+                    () @trusted {
+                        res ~= "%d---\n%s\n---".format(j, cast(string)p._chunks[j].data);
+                    } ();
+                }
             }
-            p = p._next;
+
         }
         return res.join("\n");
     }
@@ -1035,8 +1034,8 @@ struct Nbuff
         if ( _endChunkIndex < ChunksPerPage)
         {
             _pages._chunks[_endChunkIndex]._memory = source._memory;
-            _pages._chunks[_endChunkIndex]._beg = pos; // XXX
-            _pages._chunks[_endChunkIndex]._end = pos+len;
+            _pages._chunks[_endChunkIndex]._beg = source._beg + pos;
+            _pages._chunks[_endChunkIndex]._end = source._beg + pos + len;
             _endChunkIndex++;
             return;
         }
@@ -1231,7 +1230,7 @@ struct Nbuff
         auto bytesToCopy = end-start;
         auto page = chunkIndexToPage(_begChunkIndex);
         auto chunkIndex = _begChunkIndex % ChunksPerPage;
-        size_t position = page._chunks[chunkIndex]._beg;
+        size_t position;// = page._chunks[chunkIndex]._beg;
         debug(nbuff) safe_tracef("start index = %d", chunkIndex);
         debug(nbuff) safe_tracef("bytesToSkip = %d", bytesToSkip);
         debug(nbuff) safe_tracef("bytesToCopy = %d", bytesToCopy);
@@ -1255,7 +1254,7 @@ struct Nbuff
             }
             else
             {
-                position = chunk._beg + bytesToSkip;
+                position = bytesToSkip;
                 bytesToSkip = 0;
                 break;
             }
@@ -1557,25 +1556,6 @@ struct Nbuff
     }
 }
 
-// string toString(ref Nbuff b)
-// {
-//     string[] res;
-//     int i = 0;
-//     with(b)
-//     {
-//         res ~= "length: %d".format(_length);
-//         res ~= "beg_index = %d\nend_index = %d".format(_begChunkIndex, _endChunkIndex);
-//         res ~= "%2.2d %( %s\n%) -> %x".format(i, _pages._chunks, _pages._next);
-//         auto p = _pages._next;
-//         while(p !is null)
-//         {
-//             i+=ChunksPerPage;
-//             res ~= "%2.2d %( %s\n%) -> %x".format(i, p._chunks, p._next);
-//             p = p._next;
-//         }
-//     }
-//     return res.join("\n");
-// }
 
 @("NbuffChunk")
 @safe
@@ -1829,9 +1809,9 @@ unittest
     b = b[c+1..$];
     assert(b.data == "a\nbb\n".representation);
     c = b.countUntil("\n".representation);
-    infof("get line");
     line = b[0..c];
     assert(line.data == "a".representation);
+
     b = b[c+1..$];
     assert(b.data == "bb\n".representation);
     c = b.countUntil("\n".representation);
@@ -1839,7 +1819,6 @@ unittest
     b.append("ccc\nrest");
     c = b.countUntil("\n".representation);
     b = b[c+1..$];
-    writeln(b.data);
     c = b.countUntil("\n".representation);
 }
 
