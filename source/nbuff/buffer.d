@@ -673,6 +673,22 @@ struct NbuffChunk
         }
         return "[%(%02x,%)][%d..%d]".format(_memory._impl._object[0.._end], _beg, _end);
     }
+
+    auto asString(alias f)() @trusted
+    {
+        return f((cast(string)data()));
+    }
+
+    string toLower() @trusted
+    {
+        // trusted as data do not leave scope
+        return (cast(string)data()).toLower;
+    }
+    string toUpper() @trusted
+    {
+        // trusted as data do not leave scope
+        return (cast(string)data()).toUpper;
+    }
     public auto size() pure inout nothrow @safe @nogc
     {
         return _memory._size;
@@ -1163,6 +1179,89 @@ struct Nbuff
             skipPages--;
         }
         return p;
+    }
+
+    NbuffChunk data(size_t beg, size_t end)
+    {
+        if (beg>end)
+        {
+            throw NbuffError;
+        }
+        if (end>_length)
+        {
+            throw NbuffError;
+        }
+        if (beg == end || _length == 0)
+        {
+            return NbuffChunk();
+        }
+        auto bytesToSkip = beg;
+        auto bytesToCopy = end-beg;
+        auto page = chunkIndexToPage(_begChunkIndex);
+        auto chunkIndex = _begChunkIndex % ChunksPerPage;
+        size_t position;
+        debug(nbuff) safe_tracef("bytesToSkip: %d", bytesToSkip);
+        while(bytesToSkip>0)
+        {
+            auto chunk = &page._chunks[chunkIndex];
+            debug(nbuff) safe_tracef("check chunk: [%s..%s](%d)",
+                chunk._beg, chunk._end, chunk.length);
+
+            if (bytesToSkip>=chunk.length)
+            {
+                // just skip this chunk
+                debug(nbuff) safe_tracef("skip it");
+                bytesToSkip -= chunk.length;
+                chunkIndex++;
+                if (chunkIndex == ChunksPerPage)
+                {
+                    page = page._next;
+                    chunkIndex = 0;
+                    continue;
+                }
+            }
+            else
+            {
+                debug(nbuff) safe_tracef("start from it");
+                position = bytesToSkip;
+                bytesToSkip = 0;
+                break;
+            }
+        }
+        debug(nbuff) safe_tracef("start index = %d, position = %d", chunkIndex, position);
+        assert(page !is null);
+        assert(chunkIndex < ChunksPerPage);
+        if ( page._chunks[chunkIndex]._beg + position + bytesToCopy <= page._chunks[chunkIndex]._end )
+        {
+            debug(nbuff) safe_tracef("return ref to single chunk");
+            // return reference to this chunk only
+            NbuffChunk res = page._chunks[chunkIndex];
+            res._beg += position;
+            res._end = res._beg + bytesToCopy;
+            return res;
+        }
+        
+        // othervise join chunks
+        auto mc = Nbuff.get(bytesToCopy);
+        size_t bytesCopied = 0;
+        while(bytesToCopy>0)
+        {
+            auto from = page._chunks[chunkIndex]._beg + position;
+            auto to = page._chunks[chunkIndex]._end;
+            auto tc = min(bytesToCopy, to - from);
+            debug(nbuff) safe_tracef("from: %d, to: %d, tocopy=%d", from, to, tc);
+            mc._impl._object[bytesCopied..bytesCopied+tc] = page._chunks[chunkIndex]._memory._object[from..from+tc];
+            bytesCopied += tc;
+            chunkIndex++;
+            bytesToCopy -= tc;
+            position = 0;
+            if (chunkIndex>=ChunksPerPage)
+            {
+                chunkIndex -= ChunksPerPage;
+                page = page._next;
+            }
+        }
+        return NbuffChunk(mc, bytesCopied);
     }
 
     NbuffChunk data() @safe @nogc
@@ -1833,10 +1932,25 @@ unittest
 @("Nbuff11")
 unittest
 {
+    globalLogLevel = LogLevel.info;
     // init from string
     auto b = Nbuff("abc");
     assert(b.length == 3);
     assert(b.data.data == NbuffChunk("abc"));
+    b.pop();
+    NbuffChunk c = b.data(0,1);
+    assert(c.data == "b");
+    c = b.data(1,2);
+    assert(c.data == "c");
+    b = Nbuff("abc");
+    b.append("def");
+    b.append("ghi");
+    c = b.data(4,6);
+    assert(c.data == "ef");
+    c = b.data(2,4);
+    assert(c.data == "cd");
+    c = b.data(2,7);
+    assert(c.data == "cdefg");
 }
 
 version(Posix)
