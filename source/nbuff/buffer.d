@@ -674,20 +674,23 @@ struct NbuffChunk
         return "[%(%02x,%)][%d..%d]".format(_memory._impl._object[0.._end], _beg, _end);
     }
 
-    auto asString(alias f)() @trusted
+    auto asString(alias f)() @safe
     {
-        return f((cast(string)data()));
+        scope string v = () @trusted {
+            return cast(string)data();
+        }();
+        return f(v);
     }
 
-    string toLower() @trusted
+    string toLower() @safe
     {
         // trusted as data do not leave scope
-        return (cast(string)data()).toLower;
+        return asString!(std.string.toLower)();
     }
-    string toUpper() @trusted
+    string toUpper() @safe
     {
         // trusted as data do not leave scope
-        return (cast(string)data()).toUpper;
+        return asString!(std.string.toUpper)();
     }
     public auto size() pure inout nothrow @safe @nogc
     {
