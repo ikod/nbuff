@@ -1080,7 +1080,16 @@ struct Nbuff
         last_page._next._chunks[pi]._end = last_page._next._chunks[pi]._beg+len;
         _endChunkIndex++;
     }
-
+    auto frontChunk() @safe @nogc
+    {
+        if ( empty )
+        {
+            assert(0, "You are looking front chunk in empty Nbuff");
+        }
+        Page *p = chunkIndexToPage(_begChunkIndex);
+        int   i = _begChunkIndex % ChunksPerPage;
+        return p._chunks[i];
+    }
     void popChunk() @safe @nogc
     {
         if ( empty )
