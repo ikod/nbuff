@@ -24,6 +24,7 @@
   ],
   "dependencies": {
     "automem": "~>0.6",
-    "ikod-containers": "~>0"
+    "ikod-containers": "~>0",
+    "unit-threaded": "~>0.10"
   }
 }
