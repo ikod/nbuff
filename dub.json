@@ -23,7 +23,7 @@
     }
   ],
   "dependencies": {
-    "automem": "*",
-    "ikod-containers": "*"
+    "automem": "~>0.6",
+    "ikod-containers": "~>0"
   }
 }
