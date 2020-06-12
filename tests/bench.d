@@ -5,8 +5,8 @@
     #debugVersions "nbuff"
     buildRequirements "allowWarnings"
     dependency "automem" version="*"
-    dependency "ikod-containers" version="0.0.5"
-    dependency "nbuff" version="0.1.1"
+    dependency "ikod-containers" version="~>0"
+    dependency "nbuff" version="~>0"
 +/
 
 import std.datetime.stopwatch;
