@@ -98,8 +98,10 @@ static this()
         _mempool._pools[i] = Mallocator.instance.makeArray!(ubyte[])(1024);
     }
 }
+private static bool in_exit;
 static ~this()
 {
+    in_exit = true;
     for(int i=0;i<MemPool.IndexLimit;i++)
     {
         for(int j=0; j < _mempool._mark[i]; j++)
@@ -184,6 +186,12 @@ struct MemPool
         if (size>MaxSize)
         {
             throw MemPoolException;
+        }
+        if (in_exit)
+        {
+            // mem pool can be destroyed already
+            allocator.deallocate(c);
+            return;
         }
         immutable pool_index = bsr(size);
         immutable index = _mark[pool_index];
@@ -727,32 +735,23 @@ struct NbuffChunk
         }
         return res;
     }
-    string toString() inout @safe
+    string toString() inout @trusted
     {
         if ( _memory._impl is null)
         {
-            return "";
+            return null;
         }
-        return asString!(s=>s);
+        return cast(string)data().idup;
     }
-
-    auto asString(alias f)() inout @safe
-    {
-        scope string v = () @trusted {
-            return cast(string)data().idup;
-        }();
-        return f(v);
-    }
-
     string toLower() @safe
     {
         // trusted as data do not leave scope
-        return asString!(std.string.toLower)();
+        return this.toString().toLower;
     }
     string toUpper() @safe
     {
         // trusted as data do not leave scope
-        return asString!(std.string.toUpper)();
+        return this.toString.toUpper();
     }
     public auto size() pure inout nothrow @safe @nogc
     {
@@ -949,6 +948,7 @@ struct Nbuff
         while(p)
         {
             auto new_page = () @trusted {return allocator.make!Page();}();
+            //assert(!new_page);
             new_page._chunks = p._chunks;
             if ( new_pages is null)
             {
@@ -995,7 +995,7 @@ struct Nbuff
 
     string toString() @safe
     {
-        return this.data.asString!(s=>s);
+        return this.data.toString();
     }
     string dump() @safe
     {
@@ -1025,6 +1025,7 @@ struct Nbuff
             if (chunkIndex>=ChunksPerPage)
             {
                 p = p._next;
+                res ~= "▌%-72.72s▐".format("Page %x".format(p));
                 chunkIndex = 0;
             }
         }
@@ -2007,6 +2008,7 @@ unittest
 @("Nbuff9")
 unittest
 {
+    globalLogLevel = LogLevel.info;
     Nbuff b, line;
     b.append("\na\nbb\n");
     auto c = b.countUntil("\n".representation);
