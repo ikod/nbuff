@@ -97,4 +97,20 @@ Mon Dec 30 20:53:35 EET 2019
 igor@igor-Zen:~/D/nbuff/tests$ ./bench 
 898 ms, 237 μs, and 2 hnsecs
 8 secs, 330 ms, 344 μs, and 4 hnsecs
+
+Wed Jun 17 22:32:28 EEST 2020
+$ dub --single -b release --compiler ldc2 bench.d
+Running ./bench 
+append, no data copy:
+179 ms, 650 μs, and 7 hnsecs
+append with data copy:
+8 secs, 647 ms, and 289 μs
+append string:
+1 sec, 642 ms, and 314 μs
+countUntil(short):
+132 ms, 877 μs, and 6 hnsecs
+countUntil(long) :
+2 secs, 226 ms, 779 μs, and 3 hnsecs
+countUntil(long,skip) :
+1 sec, 53 ms, 47 μs, and 4 hnsecs
 */
