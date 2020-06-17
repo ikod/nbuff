@@ -488,17 +488,31 @@ struct MutableMemoryChunk
 
     this(size_t s) @safe @nogc
     {
-        _data = _mempool.alloc(s);
+        if (s<=MemPool.MaxSize)
+        {
+            _data = _mempool.alloc(s);
+        }
+        else
+        {
+            _data = allocator.makeArray!ubyte(s);
+        }
         _size = s;
     }
     ~this() @safe @nogc
     {
         debug(nbuff) safe_tracef("destroy: %s, %s", _data, _size);
-        if ( _size > 0 )
+        if ( _size == 0 )
+        {
+            return;
+        }
+        if ( _size <= MemPool.MaxSize)
         {
             _mempool.free(_data, _size);
         }
-
+        else
+        {
+            () @trusted {dispose(allocator, _data);}();
+        }
     }
     private immutable(ubyte[]) consume() @system @nogc
     {
@@ -597,19 +611,18 @@ struct ImmutableMemoryChunk
     ~this() @trusted @nogc
     {
         // trusted because ...see constructor
-        if ( _data !is null )
+        if ( _data is null || _size == 0 )
         {
-            //debug(nbuff) safe_tracef("return mem to pool");
-            if (_size>0)
-            {
-                _mempool.free(cast(ubyte[])_data, _size);
-            }
-            // else
-            // {
-            //     () @trusted {
-            //         GC.removeRange(&this._data);
-            //     }();
-            // }
+            return;
+        }
+        //debug(nbuff) safe_tracef("return mem to pool");
+        if (_size <= MemPool.MaxSize)
+        {
+            _mempool.free(cast(ubyte[])_data, _size);
+        }
+        else
+        {
+            dispose(allocator, _data.ptr);
         }
     }
     string toString()
