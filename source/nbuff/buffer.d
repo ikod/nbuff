@@ -770,7 +770,7 @@ struct NbuffChunk
     {
         return _memory._size;
     }
-    public auto length() @safe @nogc
+    public auto length() @safe @nogc inout
     {
         return _end - _beg;
     }
@@ -805,7 +805,7 @@ struct NbuffChunk
         res._end = res._beg + end - start;
         return res;
     }
-    auto opEquals(immutable(ubyte)[] b)
+    auto opEquals(const(ubyte)[] b)
     {
         return b == _memory._object[_beg.._end];
     }
@@ -1057,7 +1057,7 @@ struct Nbuff
         return _endChunkIndex == _begChunkIndex;
     }
 
-    auto length() pure nothrow @nogc @safe
+    auto length() pure nothrow @nogc @safe inout
     {
         return _length;
     }
@@ -1489,8 +1489,19 @@ struct Nbuff
     {
         return _length;
     }
-
-    bool opEquals(R)(auto ref R other) @safe @nogc
+    bool opEquals(string other) pure const @safe @nogc
+    {
+        return this == other.representation;
+    }
+    bool opEquals(const ubyte[] other) pure const @safe @nogc
+    {
+        if (other.length != length)
+        {
+            return false;
+        }
+        return countUntil(other) == 0;
+    }
+    bool opEquals(this R)(auto ref R other) pure @safe @nogc
     {
         if (this is other)
         {
@@ -1553,14 +1564,14 @@ struct Nbuff
         return equals;
     }
 
-    auto opIndex(size_t i) @safe @nogc
+    auto opIndex(size_t i) @safe @nogc inout
     {
         if ( i >= _length)
         {
             throw NbuffError;
         }
         auto page = chunkIndexToPage(_begChunkIndex);
-        auto chunkIndex = _begChunkIndex;
+        long chunkIndex = _begChunkIndex;
         while(i >= 0)
         {
             auto ci = chunkIndex % ChunksPerPage;
@@ -1578,6 +1589,10 @@ struct Nbuff
         }
         assert(0, "Index larger that length?");
     }
+    Nbuff[3] findSplitOn(string s, size_t start_from = 0) @safe @nogc
+    {
+        return findSplitOn(s.representation, start_from);
+    }
     Nbuff[3] findSplitOn(immutable(ubyte)[] b, size_t start_from = 0) @safe @nogc
     {
         Nbuff[3] result;
@@ -1590,7 +1605,24 @@ struct Nbuff
         }
         return result;
     }
-    int countUntil(immutable(ubyte)[] b, size_t start_from = 0) @safe @nogc
+    bool beginsWith(const ubyte[] b) @safe @nogc
+    {
+        if ( length < b.length )
+        {
+            return false;
+        }
+        return data()[0..b.length] == b;
+    }
+    bool beginsWith(string b) @safe @nogc
+    {
+        if ( length < b.length )
+        {
+            return false;
+        }
+        return data()[0..b.length] == b.representation;
+    }
+
+    int countUntil(const(ubyte)[] b, size_t start_from = 0) pure inout @safe @nogc
     {
         if (b.length == 0)
         {
@@ -1611,7 +1643,7 @@ struct Nbuff
         int index = 0; // index is position at which we test pattern 
         // skip start_from
         auto page = chunkIndexToPage(_begChunkIndex);
-        auto chunkIndex = _begChunkIndex;
+        long chunkIndex = _begChunkIndex;
         auto ci = 0; // ci - index of the chunk on current page
         auto chunk = &page._chunks[ci];
         while(start_from > 0) // skip requested number of bytes
