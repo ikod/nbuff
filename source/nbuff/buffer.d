@@ -85,7 +85,7 @@ debug(nbuff)
     void safe_printf(A...)(A a) @trusted
     {
         import core.stdc.stdio: printf;
-        printf(&a[0][0], a[1..$]);
+        //printf(&a[0][0], a[1..$]);
     }
 }
 
@@ -475,21 +475,26 @@ unittest
     ptr2.release();
 }
 
-
 struct MutableMemoryChunk
 {
+    debug(nbuff) static int __id;
     private
     {
         ubyte[] _data;
         size_t  _size;
     }
-
+    debug(nbuff) public
+    {
+        int     _id;
+    }
     @disable this(this);
 
     this(size_t s) @safe @nogc
     {
         if (s<=MemPool.MaxSize)
         {
+            debug(nbuff) _id = __id++;
+            debug(nbuff) tracef("alloc from pool %d\n", _id);
             _data = _mempool.alloc(s);
         }
         else
@@ -576,6 +581,10 @@ unittest
 
 struct ImmutableMemoryChunk
 {
+    debug(nbuff) public
+    {
+        int     _id = -1;
+    }
     private
     {
         immutable(ubyte[]) _data;
@@ -591,37 +600,43 @@ struct ImmutableMemoryChunk
         // 2. user can't change data location
         _size = c.size;
         _data = assumeUnique(c.consume());
+        debug(nbuff) _id = c._id;
     }
     this(string s) @safe @nogc
     {
-        // () @trusted {
-        //     GC.addRange(&this._data, _data.sizeof);
-        // }();
+        () @trusted {
+            GC.addRange(&this._data, _data.sizeof);
+        }();
         _data = s.representation();
         _size = 0;
     }
     this(immutable(ubyte)[] s) @safe @nogc
     {
-        // () @trusted {
-        //     GC.addRange(&this._data, _data.sizeof);
-        // }();
+        () @trusted {
+            GC.addRange(&this._data, _data.sizeof);
+        }();
         _data = s;
         _size = 0;
     }
     ~this() @trusted @nogc
     {
         // trusted because ...see constructor
+        if ( _data !is null && _size == 0)
+        {
+            GC.removeRange(&this._data);
+        }
         if ( _data is null || _size == 0 )
         {
             return;
         }
-        //debug(nbuff) safe_tracef("return mem to pool");
         if (_size <= MemPool.MaxSize)
         {
+            debug(nbuff) safe_printf("return mem to pool %d\n", _id);
             _mempool.free(cast(ubyte[])_data, _size);
         }
         else
         {
+            debug(nbuff) safe_printf("disposing large buffer\n");
             dispose(allocator, _data.ptr);
         }
     }
@@ -667,10 +682,14 @@ struct NbuffChunk
         size_t                          _beg, _end;
         SmartPtr!(ImmutableMemoryChunk) _memory;
     }
-
-    package this(this) @safe @nogc
-    {
-    }
+    // ~this() @trusted @nogc
+    // {
+    //     if (_memory)
+    //     {
+    //         debug(nbuff) printf("on ~NbuffChunk: %d\n", _memory._count);
+    //         debug(nbuff) printf("on ~NbuffChunk: %s\n", toStringz(dump()));
+    //     }
+    // }
     this(ref UniquePtr!MutableMemoryChunk c, size_t l) @safe @nogc
     {
         _memory = SmartPtr!ImmutableMemoryChunk(c._impl._object);
@@ -717,7 +736,14 @@ struct NbuffChunk
             {
                 res ~= repeat("◦◦", (16 - c.length)).join(" ");
             }
-            res ~= "  ";
+            if ( p == _end && p % 16 == 0 )
+            {
+                res ~= " ";
+            }
+            else
+            {
+                res ~= "  ";
+            }
             foreach(s; c)
             {
                 if ( isPrintable(s) )
@@ -780,6 +806,10 @@ struct NbuffChunk
     }
     void opAssign(T)(auto ref T other, string file = __FILE__, int line = __LINE__) @safe @nogc
     {
+        if (this is other)
+        {
+            return;
+        }
         _memory = other._memory;
         _beg = other._beg;
         _end = other._end;
@@ -1249,16 +1279,17 @@ struct Nbuff
             page._chunks[index]._beg++;
             _length--;
             toPop--;
-            debug(nbuff) safe_tracef("length = %d, toPop = %d", _length, toPop);
+            //debug(nbuff) tracef("length = %d, toPop = %d", _length, toPop);
             assert(_length >= 0);
             if (page._chunks[index]._beg == page._chunks[index]._end)
             {
                 // empty
+                debug(nbuff) tracef("dispose chunk %d", index);
                 page._chunks[index] = NbuffChunk();
                 if ( index == ChunksPerPage - 1 && _begChunkIndex>=ChunksPerPage) // last chunk on page is free
                 {
                     // release page
-                    debug(nbuff) safe_tracef("dispose page");
+                    debug(nbuff) tracef("dispose page");
                     auto page_prev = chunkIndexToPage(_begChunkIndex - ChunksPerPage);
                     page_prev._next = page._next;
                     () @trusted {dispose(allocator, page);}();
@@ -1269,6 +1300,7 @@ struct Nbuff
                 else
                 {
                     _begChunkIndex++;
+                    debug(nbuff) tracef("new _begChunkIndex %d", _begChunkIndex);
                 }
             }
         }
@@ -1418,6 +1450,7 @@ struct Nbuff
 
     Nbuff opSlice(size_t start, size_t end) @nogc @safe
     {
+        //debug(nbuff) tracef("slice %d..%d", start, end);
         if (start>end)
         {
             throw NbuffError;
@@ -1435,14 +1468,14 @@ struct Nbuff
         auto page = chunkIndexToPage(_begChunkIndex);
         auto chunkIndex = _begChunkIndex % ChunksPerPage;
         size_t position;// = page._chunks[chunkIndex]._beg;
-        debug(nbuff) tracef("start index = %d", chunkIndex);
-        debug(nbuff) tracef("bytesToSkip = %d", bytesToSkip);
-        debug(nbuff) tracef("bytesToCopy = %d", bytesToCopy);
+        // debug(nbuff) tracef("start index = %d", chunkIndex);
+        // debug(nbuff) tracef("bytesToSkip = %d", bytesToSkip);
+        // debug(nbuff) tracef("bytesToCopy = %d", bytesToCopy);
         while(bytesToSkip>0)
         {
             auto chunk = &page._chunks[chunkIndex];
-            debug(nbuff) tracef("check chunk: [%s..%s](%d)",
-                chunk._beg, chunk._end, chunk.length);
+            //debug(nbuff) tracef("check chunk: [%s..%s](%d)",
+            //    chunk._beg, chunk._end, chunk.length);
 
             if (bytesToSkip>=chunk.length)
             {
@@ -1463,7 +1496,7 @@ struct Nbuff
                 break;
             }
         }
-        debug(nbuff) tracef("start index = %d, position = %d", chunkIndex, position);
+        // debug(nbuff) tracef("start index = %d, position = %d", chunkIndex, position);
         assert(page !is null);
         assert(chunkIndex < ChunksPerPage);
         Nbuff result = Nbuff();
@@ -1471,7 +1504,7 @@ struct Nbuff
         {
             auto l = min(bytesToCopy, page._chunks[chunkIndex]._end - position - page._chunks[chunkIndex]._beg);
             //debug(nbuff) safe_tracef("copy %s[%d..%d]", page._chunks[chunkIndex]._memory._data, page._chunks[chunkIndex]._beg + position, page._chunks[chunkIndex]._beg+position+l);
-            debug(nbuff) tracef("p: %d, l: %d, b: %d", position, l, bytesToCopy);
+            // debug(nbuff) tracef("p: %d, l: %d, b: %d", position, l, bytesToCopy);
             result.append(page._chunks[chunkIndex], position, l);
             bytesToCopy -= l;
             position = 0;
@@ -1644,7 +1677,7 @@ struct Nbuff
         // skip start_from
         auto page = chunkIndexToPage(_begChunkIndex);
         long chunkIndex = _begChunkIndex;
-        auto ci = 0; // ci - index of the chunk on current page
+        auto ci = chunkIndex % ChunksPerPage; // ci - index of the chunk on current page
         auto chunk = &page._chunks[ci];
         while(start_from > 0) // skip requested number of bytes
         {
