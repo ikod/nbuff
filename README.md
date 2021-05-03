@@ -50,46 +50,36 @@ Code sample:
     }
 ```
 
-## Memory buffer. ##
 
-The main goal of this package is to **minimize data movement when receiving from network and allow standard algorithms on received data**.
+Usage scenario:
+You are reading bulk newline delimited lines (or any other way structured data) from TCP socket and process it as soon as possible. Every time you received something like:
 
+```line1\nline2\nli``` <- note incomplete last line.
 
-Basically buffer is immutable(immutable(ubyte)[])[], but it support some useful Range properties, it
+from network to your socket buffer you can process 'line1' and 'line2' and then you have keep whole buffer (or copy 
+and save it incomplete part 'li') just because you have some incomplete data.
 
-    isInputRange!Buffer,
-    isForwardRange!Buffer,
-    hasLength!Buffer,
-    hasSlicing!Buffer,
-    isBidirectionalRange!Buffer,
-    isRandomAccessRange!Buffer
+This leads to unnecessary allocations and data movement (if you choose to free old buffer and save incomplete part)
+or memory wasting (if you choose to preallocate very large buffer and keep processed and incomplete data).
 
-so it can be used with many range algorithms, but it supports several optimized methods like `find`,
-`indexOf`, `splitOn`, `findSplitOn`.
+Nbuff solve this problem by using memory pool and smart pointers - it take memory chunks from pool for reading
+from network(file, etc...), and authomatically return buffer to pool as soon as you processed all data in it and moved
+'processed' pointer forward.
+ 
+So Nbuff looks like some "window" on the list of buffers, filled with network data, and as soon as buffer moves out of this
+window and dereferenced it will be automatically returned to memory pool. Please note - there is no GC allocations, everything
+is done usin malloc.
 
-For example:
-```
-    Buffer httpMessage = Buffer();
-    httpMessage.append("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r");
-    httpMessage.append("\n");
-    httpMessage.append("Conte");
-    httpMessage.append("nt-Length: 4\r\n");
-    httpMessage.append("\r\n");
-    httpMessage.append("body");
-    writeln(httpMessage.splitOn('\n').map!"a.toString.strip");
-```
-prints:
-```
-["HTTP/1.1 200 OK", "Content-Type: text/plain", "Content-Length: 4", "", "body"]
-```
-At the same time:
+Here is sample of buffer lifecycle (see code or docs for exact function signatures):
+1. Nbuff nbuff; - initialize nbuff structure.
+1. buffer = Nbuff.get(bsize) - gives you non-copyable mutable buffer of size >= bsize
+1. socket.read(buffer.data) - fill buffer with network data.
+1. nbuff.append(buffer) - convert mutable non-copyable buffer to immutable shareable buffer and append it to nbuff
+valuable_data = nbuff.data(0, 100); - get immutable view to first 100 bytes of nbuff (they can be non-continous)
+1. nbuff.pop(100) - release fist 100 bytes of nbuff, marking them as "processed".
+ If there are any previously appended buffers which become unreferenced at this point, then they will be
+ returned to the pool.
+1. When nbuff goes out of scope all its buffers will be returned to pool.
 
- * typeid(httpMessage.splitOn('\n')) - optimized, returns Buffer[]
- * typeid(httpMessage.split('\n')) - from std.algorithms, returns Buffer[]
- * typeid(httpMessage.splitter('\n')) - from std.algorithms, returns lazy Result
-
-will give same results.
-
-You can find examples in unittest section of buffer.d 
-Buffer supports zero-copy (in most cases) append, split, slice, popFront and popBack, as long as some useful range primitives - find, indexOf, etc.
+You can find some examples in unittest section of buffer.d 
 

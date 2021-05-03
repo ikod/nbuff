@@ -894,6 +894,38 @@ struct NbuffChunk
 //     }
 // }
 alias MutableNbuffChunk = UniquePtr!MutableMemoryChunk;
+/// Smart buffer.
+/// Usage scenario:
+/// You are reading bulk newline delimited lines (or any other way structured data) from TCP socket and process it as soon as possible.
+/// Every time you received something like:
+///
+/// 'line1\nline2\nli' <- note incomplete last line.
+///
+/// from network to your socket buffer you can process 'line1' and 'line2' and then you have keep whole buffer (or copy 
+/// and save it incomplete part 'li') just because you have some incomplete data.
+///
+/// This leads to unnecessary allocations and data movement (if you choose to free old buffer and save incomplete part)
+/// or memory wasting (if you choose to preallocate very large buffer and keep processed and incomplete data).
+///
+/// Nbuff solve this problem by using memory pool and smart pointers - it take memory chunks from pool for reading
+/// from network(file, etc...), and authomatically return buffer to pool as soon as you processed all data in it and moved
+/// 'processed' pointer forward.
+/// 
+/// So Nbuff looks like some "window" on the list of buffers, filled with network data, and as soon as buffer moves out of this
+/// window and dereferenced it will be automatically returned to memory pool. Please note - there is no GC allocations, everything
+/// is done usin malloc.
+///
+/// Here is sample of buffer lifecycle (see code or docs for exact function signatures):
+/// Nbuff nbuff; - initialize nbuff structure.
+/// buffer = Nbuff.get(bsize) - gives you non-copyable mutable buffer of size >= bsize
+/// socket.read(buffer.data) - fill buffer with network data.
+/// nbuff.append(buffer) - convert mutable non-copyable buffer to immutable shareable buffer and append it to nbuff
+/// valuable_data = nbuff.data(0, 100); - get immutable view to first 100 bytes of nbuff (they can be non-continous)
+/// nbuff.pop(100) - release fist 100 bytes of nbuff, marking them as "processed".
+///     If there are any previously appended buffers which become unreferenced at this point, then they will be
+///     returned to the pool.
+/// When nbuff goes out of scope all its buffers will be returned to pool.
+///
 struct Nbuff
 {
     private
