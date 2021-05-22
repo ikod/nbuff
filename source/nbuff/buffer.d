@@ -1350,7 +1350,7 @@ struct Nbuff
         return p;
     }
 
-    NbuffChunk data(size_t beg, size_t end)
+    NbuffChunk data(size_t beg, size_t end) @safe
     {
         if (beg>end)
         {
