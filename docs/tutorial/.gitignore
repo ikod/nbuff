@@ -1,0 +1,15 @@
+.dub
+docs.json
+__dummy.html
+docs/
+/tutorial
+tutorial.so
+tutorial.dylib
+tutorial.dll
+tutorial.a
+tutorial.lib
+tutorial-test-*
+*.exe
+*.o
+*.obj
+*.lst

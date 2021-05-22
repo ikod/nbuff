@@ -1,0 +1,12 @@
+{
+	"authors": [
+		"igor"
+	],
+	"copyright": "Copyright © 2021, igor",
+	"dependencies": {
+		"nbuff": "~>0.1.12"
+	},
+	"description": "A minimal D application.",
+	"license": "MIT",
+	"name": "tutorial"
+}
