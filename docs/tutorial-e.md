@@ -4,7 +4,7 @@
 
 Nbuff is a buffer management library. The main goal when writing it was: @nogc, @safe, minimum number of allocations, the absence (or minimal) data copying.
 
-First about the mental model that you need to have in head for the successful use of the library.
+First about the mental model you need to have in head for the successful use of the library.
 
 * Nbuff is a chain of immutable buffers, plus a pointers(indexes) to data start and end.
 * The main operations for Nbuff are adding data (always after the end pointer), accessing the data by index (the index is always from the start pointer), and freeing the processed data (always freed from the start pointer).
