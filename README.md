@@ -1,6 +1,6 @@
 ## Nbuff ##
 
-Nbuff is `nogc` buffer. Goals:
+Nbuff is `nogc` and safe buffer. Goals:
 
 * give user immutable view on bytes
 * avoid data copy
@@ -9,6 +9,8 @@ Nbuff is `nogc` buffer. Goals:
 Main consumer of Nbuff can be networking code. Usage scenario: user requested mutable ubyte[] from Nbuff, read data from network into this buffer, then append received data to Nbuff. Then you can find patterns in Nbuff content, apply range algorithms to it, split in on parts, as Nbuff behave as range of bytes - everything without data copy and memory allocations.
 
 All Nbuff content is refcounted, so it will be authomatically freed if not referenced.
+
+You can find detailed [tutorial](https://github.com/ikod/nbuff/blob/master/docs/tutorial-e.md) in the docs directory, and some examples in unittest section of buffer.d
 
 Code sample:
 
@@ -68,18 +70,6 @@ from network(file, etc...), and authomatically return buffer to pool as soon as 
  
 So Nbuff looks like some "window" on the list of buffers, filled with network data, and as soon as buffer moves out of this
 window and dereferenced it will be automatically returned to memory pool. Please note - there is no GC allocations, everything
-is done usin malloc.
+is done using malloc.
 
-Here is sample of buffer lifecycle (see code or docs for exact function signatures):
-1. Nbuff nbuff; - initialize nbuff structure.
-1. buffer = Nbuff.get(bsize) - gives you non-copyable mutable buffer of size >= bsize
-1. socket.read(buffer.data) - fill buffer with network data.
-1. nbuff.append(buffer) - convert mutable non-copyable buffer to immutable shareable buffer and append it to nbuff
-valuable_data = nbuff.data(0, 100); - get immutable view to first 100 bytes of nbuff (they can be non-continous)
-1. nbuff.pop(100) - release fist 100 bytes of nbuff, marking them as "processed".
- If there are any previously appended buffers which become unreferenced at this point, then they will be
- returned to the pool.
-1. When nbuff goes out of scope all its buffers will be returned to pool.
-
-You can find some examples in unittest section of buffer.d 
 
