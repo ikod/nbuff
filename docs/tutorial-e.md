@@ -2,13 +2,13 @@
 
 <H2> Introduction </h2>
 
-Nbuff is a buffer management library. The main goal when writing it was: @nogc, @safe, minimum number of allocations, the absence (or minimal) data copying.
+Nbuff is a buffer management library. The main goal when writing it was: @nogc, @safe, minimum number of allocations, the absence of (or minimal) data copying.
 
-First about the mental model you need to have in head for the successful use of the library.
+First about the mental model you need to have in mind for the successful use of the library.
 
-* Nbuff is a chain of immutable buffers, plus a pointers(indexes) to data start and end.
-* The main operations for Nbuff are adding data (always after the end pointer), accessing the data by index (the index is always from the start pointer), and freeing the processed data (always freed from the start pointer).
-* Buffers added to Nbuff are taken from (and returned to) the thread-local buffer pool (allocated via Mallocator)
+* Nbuff is a chain of immutable buffers, plus pointers (indexes) to data start and end.
+* The main operations for Nbuff are appending data (always after the end pointer), accessing the data by index (the index is always from the start pointer), and freeing the processed data (always freed from the start pointer).
+* Buffers added to Nbuff are taken from (and returned to) a thread-local buffer pool (allocated via Mallocator)
 
 
 For the library user, Nbuff is an "infinite chain of buffers" to which he adds new data and discards the processed data. All memory management is transparent to the user.
@@ -154,14 +154,14 @@ process record
 ▌00000 ▛61 62 63 64 65 66 67 68 69 6a 6b 6c 6d 6e 6f 70  abcdefghijklmnop▐
 ▌00016  71 72 73 74 75 76 77 78 79 7a▟** ** ** ** ** **  qrstuvwxyz      ▐
 ```
-Here you can see that the contiguous view is created by assembling the buffers into one contiguous buffer.
+Here you can see that the contiguous view is created by assembling (copying) the buffers into one (new) contiguous buffer.
 
 What is the profit from using the library in such a simple case?
 
  1. Allocation, release, reuse of memory occurs automatically, without polluting the main code.
  1. The garbage collector is not used, while the absence of memory leaks is guaranteed.
  1. All code, except for direct memory access, is safe.
- 1. Data copying occurs only when it is necessary, and may not be available at all.
+ 1. Data copying occurs only when it is necessary, and may not be required at all.
 
 Consider another case - we read lines from a file and process only those that start with the substring "a".
 File:
