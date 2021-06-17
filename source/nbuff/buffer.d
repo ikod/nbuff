@@ -952,15 +952,6 @@ struct Nbuff
     ///
     this(this) @nogc @safe
     {
-        // if (  empty || ( _begChunkIndex < ChunksPerPage && _endChunkIndex < ChunksPerPage))
-        // {
-        //     for(size_t i=_begChunkIndex;i<_endChunkIndex;i++)
-        //     {
-        //         //_pages._chunks[i]._memory._count++;
-        //     }
-        //     _pages._next = null;
-        //     return;
-        // }
         // copy only allocated pages
         Page* new_pages, last_new_page;
         auto p = _pages._next;
@@ -1001,6 +992,7 @@ struct Nbuff
         {
             return;
         }
+        // release everything `this` holds
         auto p = _pages._next;
         while(p)
         {
@@ -1008,6 +1000,7 @@ struct Nbuff
             () @trusted {dispose(allocator, p);}();
             p = next;
         }
+        // copy info from other to this
         _length = other._length;
         _begChunkIndex = other._begChunkIndex;
         _endChunkIndex = other._endChunkIndex;
@@ -1086,15 +1079,6 @@ struct Nbuff
         {
             res ~= "▌%-72.72s▐".format("chunk %d ".format(i));
             res ~= p._chunks[chunkIndex].dump()[0..$-1];
-            // for(ulong j=chunkIndex;j<ChunksPerPage && i < _endChunkIndex; j++,i++)
-            // {
-            //     if (p._chunks[j].length>0)
-            //     {
-            //         () @trusted {
-            //             res ~= "%d---○%s●---".format(j, cast(string)p._chunks[j].data);
-            //         } ();
-            //     }
-            // }
             i++;
             chunkIndex++;
             if (chunkIndex>=ChunksPerPage)
@@ -1169,10 +1153,11 @@ struct Nbuff
         _length += l;
         if ( _endChunkIndex < ChunksPerPage)
         {
+            // just convert it to immutable chunk and store it
             _pages._chunks[_endChunkIndex++] = NbuffChunk(c,l);
             return;
         }
-
+        // go to last page and store chunk there
         Page* last_page = &_pages;
         auto pi = _endChunkIndex - ChunksPerPage;
         debug(nbuff) safe_tracef("pi: %d", pi);
@@ -1198,6 +1183,7 @@ struct Nbuff
     {
         append(source, 0, source.length);
     }
+    /// append some part of other nbuff
     void append(ref NbuffChunk source, size_t pos, size_t len) @safe @nogc
     {
         if (len==0)
@@ -1235,6 +1221,7 @@ struct Nbuff
         last_page._next._chunks[pi]._end = last_page._next._chunks[pi]._beg+len;
         _endChunkIndex++;
     }
+    /// return first stored chunk
     auto frontChunk() @safe @nogc
     {
         if ( empty )
@@ -1245,6 +1232,7 @@ struct Nbuff
         int   i = _begChunkIndex % ChunksPerPage;
         return p._chunks[i];
     }
+    /// throw away first chunk
     void popChunk() @safe @nogc
     {
         if ( empty )
@@ -1290,6 +1278,7 @@ struct Nbuff
             _endChunkIndex -= ChunksPerPage;
         }
     }
+    /// pop n bytes from nbuff
     void pop(long n=1) @safe @nogc
     {
         assert(n <= _length);
@@ -1311,7 +1300,6 @@ struct Nbuff
             page._chunks[index]._beg++;
             _length--;
             toPop--;
-            //debug(nbuff) tracef("length = %d, toPop = %d", _length, toPop);
             assert(_length >= 0);
             if (page._chunks[index]._beg == page._chunks[index]._end)
             {
@@ -1349,7 +1337,12 @@ struct Nbuff
         }
         return p;
     }
-
+    ///
+    /// return immutable continuous view to [beg, end] of this nbuff.
+    /// Data copy:
+    ///  We can avoid data copy if [beg, end] lies within single stored immutable chunk. Then we just return ref to this chunk
+    ///  We can't avoid data copy if [beg, end] span several chunks. Then we have to join them.
+    /// 
     NbuffChunk data(size_t beg, size_t end) @safe
     {
         if (beg>end)
@@ -1410,7 +1403,7 @@ struct Nbuff
             return res;
         }
         
-        // othervise join chunks
+        // otherwise join chunks
         auto mc = Nbuff.get(bytesToCopy);
         size_t bytesCopied = 0;
         while(bytesToCopy>0)
@@ -1432,7 +1425,12 @@ struct Nbuff
         }
         return NbuffChunk(mc, bytesCopied);
     }
-
+    ///
+    /// return immutable continuous view to this whole nbuff.
+    /// Data copy:
+    ///  We can avoid data copy if this nbuff store single immutable chunk. Then we just return ref to this chunk
+    ///  We can't avoid data copy if nbuff span several chunks. Then we have to join them.
+    /// 
     NbuffChunk data() @safe @nogc
     {
         if (_length==0)
@@ -1479,7 +1477,10 @@ struct Nbuff
         }
         return NbuffChunk(mc, _length);
     }
-
+    ///
+    /// return non-contiguous vie to slice of this nbuff.
+    /// Data copy: none
+    ///
     Nbuff opSlice(size_t start, size_t end) @nogc @safe
     {
         //debug(nbuff) tracef("slice %d..%d", start, end);
@@ -1528,15 +1529,13 @@ struct Nbuff
                 break;
             }
         }
-        // debug(nbuff) tracef("start index = %d, position = %d", chunkIndex, position);
         assert(page !is null);
         assert(chunkIndex < ChunksPerPage);
         Nbuff result = Nbuff();
+        /// copy references
         while(bytesToCopy>0)
         {
             auto l = min(bytesToCopy, page._chunks[chunkIndex]._end - position - page._chunks[chunkIndex]._beg);
-            //debug(nbuff) safe_tracef("copy %s[%d..%d]", page._chunks[chunkIndex]._memory._data, page._chunks[chunkIndex]._beg + position, page._chunks[chunkIndex]._beg+position+l);
-            // debug(nbuff) tracef("p: %d, l: %d, b: %d", position, l, bytesToCopy);
             result.append(page._chunks[chunkIndex], position, l);
             bytesToCopy -= l;
             position = 0;
@@ -1749,15 +1748,6 @@ struct Nbuff
             while(to_compare>0)
             {
                 auto c_l = min(to_compare, local_chunk.length-local_position_this); // we can comapre only until the end of the chunk
-                //debug(nbuff) writefln("local_chunk: ◅%s►", cast(string)local_chunk.data[local_chunk._beg..$]);
-                // debug(nbuff) writefln("to_compare: %d, chunk.length=%d, local_position_this=%d, c_l=%d",
-                //     to_compare, local_chunk.length, local_position_this, c_l);
-                // debug(nbuff) writefln("%s:%d compare [%(%02x %)]:\"%s\" and [%(%02x %)]",
-                //     __FILE__,__LINE__,
-                //     local_chunk._memory._data[local_chunk._beg+local_position_this..local_chunk._beg+local_position_this+c_l],
-                //     cast(string)local_chunk._memory._data[local_chunk._beg+local_position_this..local_chunk._beg+local_position_this+c_l],
-                //     b[local_position_needle..local_position_needle+c_l]
-                // );
                 immutable equals = equal(
                     local_chunk._memory._data[local_chunk._beg+local_position_this..local_chunk._beg+local_position_this+c_l],
                     b[local_position_needle..local_position_needle+c_l]
@@ -1827,7 +1817,7 @@ struct Nbuff
     version(Posix)
     {
         import core.sys.posix.sys.uio: iovec;
-        /// build iovec
+        /// build iovec from this nbuff
         /// Paramenter v - ref to array of iovec structs
         /// n - size of array (must be >0)
         /// Return number of actually filled entries;
@@ -1906,16 +1896,6 @@ unittest
     copy("Def".representation, chunk.data);
     b.append(chunk, 3);
     d = b;
-    // for(int i=0; i <= 2*Nbuff.ChunksPerPage; i++)
-    // {
-    //     chunk = Nbuff.get(64);
-    //     b.append(chunk, i);
-    // }
-    // auto c = b;
-    // debug(nbuff) writefln("b: %s", b);
-    // debug(nbuff) writefln("c: %s", c);
-    // d = c;
-    // debug(nbuff) writefln("d: %s", d);
 }
 
 @("Nbuff1")
@@ -2077,7 +2057,6 @@ unittest
     auto chunk = Nbuff.get(16);
     copy("100\n".representation, chunk.data);
     f.append(chunk, 4);
-//    assert(cast(string)f.data == "Length: 100\n");
     g.clear();
     g.append("L");
     g.append("ength: 100\n");

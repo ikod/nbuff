@@ -23,7 +23,6 @@
     }
   ],
   "dependencies": {
-    "ikod-containers": "~>0",
     "unit-threaded": "~>0.10"
   }
 }
