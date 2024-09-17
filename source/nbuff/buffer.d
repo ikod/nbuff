@@ -70,7 +70,7 @@ debug(nbuff) @safe @nogc nothrow
                         {
                             //debug(nbuff)errorf("[%x] %s:%d Exception: %s", Thread.getThis().id(), file, line, e);
                         }
-                        catch
+                        catch(Exception e)
                         {
                         }
                     }();
